@@ -55,16 +55,25 @@ export class DriftService extends Service {
         type: seed.type,
         contentId: seed.contentId,
       })
-      if (existing) continue
-      await this.ctx.database.create('drift_content', {
-        type: seed.type,
-        contentId: seed.contentId,
-        version: 1,
-        enabled: true,
-        data: seed.data,
-        createdAt: now,
-        updatedAt: now,
-      })
+      if (!existing) {
+        await this.ctx.database.create('drift_content', {
+          type: seed.type,
+          contentId: seed.contentId,
+          version: seed.version,
+          enabled: true,
+          data: seed.data,
+          createdAt: now,
+          updatedAt: now,
+        })
+      } else if (existing.version < seed.version) {
+        // Seed updates are explicit: bump the seed version to replace its data.
+        // Keep an administrator's enabled/disabled choice intact.
+        await this.ctx.database.set('drift_content', { id: existing.id }, {
+          version: seed.version,
+          data: seed.data,
+          updatedAt: now,
+        })
+      }
     }
     const rows = await this.ctx.database.get('drift_content', {})
     this.content.load(rows)

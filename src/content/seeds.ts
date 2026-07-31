@@ -1,9 +1,12 @@
 import { ContentDefinition } from './schema'
 
-export const seedContent: ContentDefinition[] = [
+export type SeedContentDefinition = ContentDefinition & { version: number }
+
+export const seedContent: SeedContentDefinition[] = [
   {
     type: 'region',
     contentId: 'forest',
+    version: 1,
     data: {
       name: '森林',
       description: '潮湿而寂静的林地。',
@@ -21,6 +24,7 @@ export const seedContent: ContentDefinition[] = [
   {
     type: 'item',
     contentId: 'wood',
+    version: 1,
     data: {
       name: '木材',
       description: '可以用于制作和建造的普通木材。',
@@ -30,6 +34,7 @@ export const seedContent: ContentDefinition[] = [
   {
     type: 'item',
     contentId: 'ration',
+    version: 1,
     data: {
       name: '口粮',
       description: '开始一天行动时自动消耗。',
@@ -45,6 +50,7 @@ export const seedContent: ContentDefinition[] = [
   {
     type: 'enemy',
     contentId: 'wild-rat',
+    version: 1,
     data: {
       name: '野鼠',
       description: '一只护食的野鼠。',
@@ -56,6 +62,7 @@ export const seedContent: ContentDefinition[] = [
   {
     type: 'building',
     contentId: 'shelter',
+    version: 1,
     data: {
       name: '庇护所',
       description: '一个简陋但属于你的落脚点。',
@@ -69,6 +76,7 @@ export const seedContent: ContentDefinition[] = [
   {
     type: 'event',
     contentId: 'forest-rustle',
+    version: 1,
     data: {
       name: '灌木中的动静',
       description: '前方的灌木突然剧烈摇晃。',

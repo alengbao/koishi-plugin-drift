@@ -227,4 +227,24 @@ describe('DriftService with SQLite', () => {
     expect(preserved.data.name).toBe('自定义森林')
     expect(await second.ctx.database.get('drift_content', {})).toHaveLength(6)
   })
+
+  it('applies a seed update only when its version increases', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'drift-test-'))
+    temporaryDirectories.push(directory)
+    const databasePath = join(directory, 'drift.db')
+    const first = await createService(databasePath)
+    const [wood] = await first.ctx.database.get('drift_content', { type: 'item', contentId: 'wood' })
+    await first.ctx.database.set('drift_content', { id: wood.id }, {
+      version: 0,
+      data: { name: '旧木材', description: '旧配置', kind: 'resource' },
+    })
+    await first.ctx.stop()
+    contexts.splice(contexts.indexOf(first.ctx), 1)
+
+    const second = await createService(databasePath)
+    const [updated] = await second.ctx.database.get('drift_content', { type: 'item', contentId: 'wood' })
+    expect(updated.version).toBe(1)
+    expect(updated.data).toMatchObject({ name: '木材', description: '可以用于制作和建造的普通木材。' })
+    await second.ctx.stop()
+  })
 })

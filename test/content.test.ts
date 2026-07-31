@@ -9,7 +9,7 @@ function rows(): DriftContent[] {
     id: index + 1,
     type: seed.type,
     contentId: seed.contentId,
-    version: 1,
+    version: seed.version,
     enabled: true,
     data: structuredClone(seed.data),
     createdAt: now,

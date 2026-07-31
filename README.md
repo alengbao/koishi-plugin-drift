@@ -36,6 +36,12 @@ drift.suicide
 When the host loads Koishi's official help plugin, use `help drift`,
 `drift -h`, or the localized `帮助 漂流` shortcut to list these commands.
 
+Content IDs such as `wood`, `ration`, and `wild-rat` are stable logical IDs,
+not generated snowflake IDs. Built-in content carries an explicit version. A
+plugin update replaces a built-in row only when its seed version increases;
+otherwise existing content edits are preserved. The `enabled` setting is never
+reset by a seed update.
+
 Ordinary actions use explicit subcommands. When an event or confirmation is
 pending, reply with its option number directly; no choose command is needed.
 Numeric choices expire after five minutes by default, and the timeout can be
