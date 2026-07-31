@@ -1,0 +1,12 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "glow-moss",
+  "version": 1,
+  "data": {
+    "name": "发光苔",
+    "description": "在黑暗中散发微弱冷光的潮湿苔藓。",
+    "kind": "resource",
+    "capabilities": []
+  }
+}

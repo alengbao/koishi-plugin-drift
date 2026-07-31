@@ -1,0 +1,188 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "event",
+  "contentId": "forest-strange-fungi",
+  "version": 1,
+  "data": {
+    "name": "奇怪的菌群",
+    "regionIds": [
+      "forest"
+    ],
+    "conditions": [],
+    "cooldownMs": 43200000,
+    "fallbackVariantId": "edible",
+    "variants": [
+      {
+        "id": "edible",
+        "description": "倒木背阴处长着一簇气味温和的浅褐色菌伞。",
+        "conditions": [],
+        "weight": 3,
+        "choices": [
+          {
+            "id": "collect",
+            "label": "小心采集",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "wild-mushroom",
+                  "quantity": 2
+                }
+              ],
+              "message": "你采到了 2 份野生菌。"
+            }
+          },
+          {
+            "id": "taste",
+            "label": "尝一点",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "adjustHp",
+                  "amount": 1
+                }
+              ],
+              "message": "菌肉味道温和，你恢复了 1 点生命。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "dense",
+        "description": "潮湿洼地里挤满了肥厚的菌伞，看起来可以收获不少。",
+        "conditions": [],
+        "weight": 2,
+        "choices": [
+          {
+            "id": "collect",
+            "label": "小心采集",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "wild-mushroom",
+                  "quantity": 3
+                }
+              ],
+              "message": "你采到了 3 份野生菌。"
+            }
+          },
+          {
+            "id": "taste",
+            "label": "尝一点",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "adjustHp",
+                  "amount": 1
+                }
+              ],
+              "message": "菌肉味道温和，你恢复了 1 点生命。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "irritating",
+        "description": "斑驳菌群喷出辛辣孢子，靠近它可能会受伤。",
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "collect",
+            "label": "小心采集",
+            "conditions": [
+              {
+                "type": "hp",
+                "operator": "gte",
+                "value": 2
+              }
+            ],
+            "disabledReason": "生命不足，无法冒险接近刺激性孢子",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "wild-mushroom",
+                  "quantity": 1
+                },
+                {
+                  "type": "adjustHp",
+                  "amount": -1
+                }
+              ],
+              "message": "你忍着孢子的刺激采到了 1 份野生菌，但失去了 1 点生命。"
+            }
+          },
+          {
+            "id": "taste",
+            "label": "尝一点",
+            "conditions": [
+              {
+                "type": "hp",
+                "operator": "gte",
+                "value": 2
+              }
+            ],
+            "disabledReason": "生命不足，不能冒险品尝",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "adjustHp",
+                  "amount": -1
+                }
+              ],
+              "message": "辛辣的汁液让你失去了 1 点生命。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

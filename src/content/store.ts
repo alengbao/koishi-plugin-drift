@@ -21,13 +21,17 @@ export class ContentStore {
   private versions = new Map<string, number>()
 
   load(rows: DriftContent[]) {
-    this.regions.clear()
-    this.items.clear()
-    this.enemies.clear()
-    this.buildings.clear()
-    this.events.clear()
-    this.versions.clear()
+    const next = new ContentStore()
+    next.populate(rows)
+    this.regions = next.regions
+    this.items = next.items
+    this.enemies = next.enemies
+    this.buildings = next.buildings
+    this.events = next.events
+    this.versions = next.versions
+  }
 
+  private populate(rows: DriftContent[]) {
     for (const row of rows) {
       if (!row.enabled) continue
       const parsed = contentDefinitionSchema.safeParse({
@@ -123,11 +127,27 @@ export class ContentStore {
   itemEntries() { return [...this.items.entries()] }
   craftableItems() { return this.itemEntries().filter(([, item]) => item.recipe) }
 
-  findCraftableItem(query: string) {
+  findItem(query: string) {
     const normalized = query.trim().toLowerCase()
-    return this.craftableItems().find(([itemId, item]) => (
+    return this.itemEntries().find(([itemId, item]) => (
       itemId.toLowerCase() === normalized || item.name === query.trim()
     ))
+  }
+
+  findCraftableItem(query: string) {
+    const found = this.findItem(query)
+    return found?.[1].recipe ? found : undefined
+  }
+
+  fileDefinition(type: ContentType, contentId: string) {
+    const version = this.version(type, contentId)
+    switch (type) {
+      case 'region': return { type, contentId, version, data: this.region(contentId) } as const
+      case 'item': return { type, contentId, version, data: this.item(contentId) } as const
+      case 'enemy': return { type, contentId, version, data: this.enemy(contentId) } as const
+      case 'building': return { type, contentId, version, data: this.building(contentId) } as const
+      case 'event': return { type, contentId, version, data: this.event(contentId) } as const
+    }
   }
 
   private required<T>(map: Map<string, T>, type: string, id: string): T {

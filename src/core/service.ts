@@ -1,6 +1,14 @@
 import { $, Context, Service } from 'koishi'
+import { isDeepStrictEqual } from 'node:util'
 import { ContentStore } from '../content/store'
-import { seedContent } from '../content/seeds'
+import {
+  contentKey,
+  exportContentFile,
+  readBuiltinContent,
+  readContentSources,
+} from '../content/files'
+import type { ContentSourceSet } from '../content/files'
+import type { ContentFileDefinition } from '../content/schema'
 import type {
   BuildingData,
   EventCondition,
@@ -16,6 +24,8 @@ import type {
   CampView,
   CharacterHistory,
   CharacterSnapshot,
+  ContentReport,
+  ContentType,
   DeathCause,
   GameResult,
   GameSnapshot,
@@ -25,6 +35,7 @@ import type {
 import type {
   DriftCharacter,
   DriftCharacterEvent,
+  DriftContent,
   DriftIdentity,
   DriftPendingChoice,
   DriftUser,
@@ -36,6 +47,7 @@ export interface DriftServiceOptions {
   now?: () => Date
   random?: () => number
   choiceTimeout?: number
+  contentDir?: string
 }
 
 declare module 'koishi' {
@@ -49,17 +61,20 @@ export class DriftService extends Service {
   private readonly now: () => Date
   private readonly random: () => number
   private readonly choiceTimeout: number
+  private readonly contentDir: string
 
   constructor(ctx: Context, options: DriftServiceOptions = {}) {
     super(ctx, 'drift', true)
     this.now = options.now ?? (() => new Date())
     this.random = options.random ?? Math.random
     this.choiceTimeout = options.choiceTimeout ?? 5 * 60 * 1000
+    this.contentDir = options.contentDir ?? `${ctx.baseDir}/data/drift/content`
   }
 
   protected async start() {
+    const builtin = await readBuiltinContent(false)
     const now = this.now()
-    for (const seed of seedContent) {
+    for (const seed of builtin.definitions) {
       const [existing] = await this.ctx.database.get('drift_content', {
         type: seed.type,
         contentId: seed.contentId,
@@ -378,6 +393,281 @@ export class DriftService extends Service {
     return this.content.craftableItems()
   }
 
+  async checkContent(): Promise<ContentReport> {
+    try {
+      const sources = await readContentSources(this.contentDir, true)
+      const rows = await this.ctx.database.get('drift_content', {})
+      new ContentStore().load(this.runtimeContentRows(rows, sources.definitions))
+      return this.contentReport('content-valid', '内容校验通过。', sources)
+    } catch (error) {
+      return this.contentFailure('content-invalid', error)
+    }
+  }
+
+  async loadContent(): Promise<ContentReport> {
+    try {
+      const sources = await readContentSources(this.contentDir, true)
+      const rows = await this.ctx.database.get('drift_content', {})
+      const candidate = this.runtimeContentRows(rows, sources.definitions)
+      this.content.load(candidate)
+      return this.contentReport('content-loaded', '内容已热加载到内存，数据库未修改。', sources)
+    } catch (error) {
+      return this.contentFailure('content-load-failed', error)
+    }
+  }
+
+  async syncContent(): Promise<ContentReport> {
+    try {
+      const sources = await readContentSources(this.contentDir, true)
+      let inserted = 0
+      let updated = 0
+      let skipped = 0
+      await this.transact(async (db) => {
+        const rows = await db.get('drift_content', {})
+        const byKey = new Map(rows.map(row => [`${row.type}:${row.contentId}`, row]))
+        const creates: ContentFileDefinition[] = []
+        const updates: Array<{ row: DriftContent, definition: ContentFileDefinition }> = []
+        const prospective = [...rows]
+
+        for (const definition of sources.definitions) {
+          const existing = byKey.get(contentKey(definition))
+          if (!existing) {
+            creates.push(definition)
+            prospective.push(this.syntheticContentRow(definition, prospective.length + 1))
+            inserted += 1
+          } else if (definition.version > existing.version) {
+            updates.push({ row: existing, definition })
+            const index = prospective.findIndex(row => row.id === existing.id)
+            prospective[index] = { ...existing, version: definition.version, data: definition.data }
+            updated += 1
+          } else if (definition.version === existing.version) {
+            if (!isDeepStrictEqual(definition.data, existing.data)) {
+              throw new Error(`内容 ${contentKey(definition)} 与数据库版本同为 ${definition.version}，但数据不同；请先增加版本`)
+            }
+            skipped += 1
+          } else {
+            skipped += 1
+          }
+        }
+
+        new ContentStore().load(prospective)
+        const now = this.now()
+        for (const definition of creates) {
+          await db.create('drift_content', {
+            type: definition.type,
+            contentId: definition.contentId,
+            version: definition.version,
+            enabled: true,
+            data: definition.data,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+        for (const { row, definition } of updates) {
+          await db.set('drift_content', { id: row.id }, {
+            version: definition.version,
+            data: definition.data,
+            updatedAt: now,
+          })
+        }
+      })
+      this.content.load(await this.ctx.database.get('drift_content', {}))
+      return {
+        ...this.contentReport('content-synced', '内容已发布到数据库。', sources),
+        inserted,
+        updated,
+        skipped,
+      }
+    } catch (error) {
+      return this.contentFailure('content-sync-failed', error)
+    }
+  }
+
+  async exportContent(type: ContentType, contentId: string, force: boolean): Promise<ContentReport> {
+    try {
+      const current = this.content.fileDefinition(type, contentId)
+      const path = await exportContentFile(this.contentDir, {
+        ...current,
+        version: current.version + 1,
+      }, force)
+      return { ok: true, code: 'content-exported', message: `内容已导出：${path}`, path }
+    } catch (error) {
+      return this.contentFailure('content-export-failed', error)
+    }
+  }
+
+  async resetCharacter(actor: ActorIdentity, requestId: string): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+
+      const now = this.now()
+      await db.remove('drift_inventory', { characterId: character.id })
+      await db.remove('drift_character_building', { characterId: character.id })
+      await db.remove('drift_pending_choice', { characterId: character.id })
+      await db.remove('drift_character_event', { characterId: character.id })
+      Object.assign(character, {
+        status: 'active' as const,
+        speciesId: 'human',
+        professionId: 'drifter',
+        regionId: 'forest',
+        hp: 3,
+        maxHp: 3,
+        attack: 1,
+        actionPoints: 3,
+        maxActionPoints: 3,
+        apDate: this.localDate(now),
+        provisionDate: null,
+        hungerDays: 0,
+        deathCause: null,
+        deathDetail: null,
+        diedAt: null,
+        updatedAt: now,
+        revision: character.revision + 1,
+      })
+      await db.set('drift_character', { id: character.id }, {
+        status: character.status,
+        speciesId: character.speciesId,
+        professionId: character.professionId,
+        regionId: character.regionId,
+        hp: character.hp,
+        maxHp: character.maxHp,
+        attack: character.attack,
+        actionPoints: character.actionPoints,
+        maxActionPoints: character.maxActionPoints,
+        apDate: character.apDate,
+        provisionDate: character.provisionDate,
+        hungerDays: character.hungerDays,
+        revision: character.revision,
+        deathCause: character.deathCause,
+        deathDetail: character.deathDetail,
+        diedAt: character.diedAt,
+        updatedAt: character.updatedAt,
+      })
+      await db.create('drift_inventory', {
+        characterId: character.id,
+        itemId: 'ration',
+        quantity: 1,
+        updatedAt: now,
+      })
+      const result = this.success('debug-reset', `“${character.name}”已恢复到初始状态。`, {
+        character: this.characterSnapshot(character),
+      })
+      await this.log(db, requestId, user.id, character.id, 'dev:reset', {}, result)
+      return result
+    })
+  }
+
+  async debugGiveItem(actor: ActorIdentity, item: string, quantity: number, requestId: string): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) {
+        return this.failure('invalid-quantity', '数量必须是 1 到 9999 的整数。')
+      }
+      const found = this.content.findItem(item)
+      if (!found) return this.failure('unknown-item', '没有这个物品。')
+      await this.adjustInventory(db, character.id, found[0], quantity)
+      const result = this.success('debug-item-given', `已给予 ${quantity} 份${found[1].name}。`)
+      await this.log(db, requestId, user.id, character.id, 'dev:give', { itemId: found[0], quantity }, result)
+      return result
+    })
+  }
+
+  async debugSetStat(
+    actor: ActorIdentity,
+    stat: 'hp' | 'ap',
+    value: number,
+    requestId: string,
+  ): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+      const maximum = stat === 'hp' ? character.maxHp : character.maxActionPoints
+      const minimum = stat === 'hp' ? 1 : 0
+      if (!Number.isInteger(value) || value < minimum || value > maximum) {
+        return this.failure('invalid-stat', `${stat.toUpperCase()} 必须是 ${minimum} 到 ${maximum} 的整数。`)
+      }
+      const now = this.now()
+      const field = stat === 'hp' ? 'hp' : 'actionPoints'
+      character[field] = value
+      character.updatedAt = now
+      character.revision += 1
+      await db.set('drift_character', { id: character.id }, {
+        [field]: value,
+        updatedAt: now,
+        revision: character.revision,
+      })
+      const result = this.success('debug-stat-set', `已将 ${stat.toUpperCase()} 设置为 ${value}/${maximum}。`)
+      await this.log(db, requestId, user.id, character.id, `dev:${stat}`, { value }, result)
+      return result
+    })
+  }
+
+  async debugClearEvents(actor: ActorIdentity, eventId: string | undefined, requestId: string): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+      if (eventId) {
+        try {
+          this.content.event(eventId)
+        } catch {
+          return this.failure('unknown-event', '没有这个事件。')
+        }
+        await db.remove('drift_character_event', { characterId: character.id, eventId })
+      } else {
+        await db.remove('drift_character_event', { characterId: character.id })
+      }
+      const [pending] = await db.get('drift_pending_choice', { characterId: character.id })
+      if (pending?.kind === 'event' && (!eventId || pending.sourceId === eventId)) {
+        await db.remove('drift_pending_choice', { characterId: character.id })
+      }
+      const result = this.success('debug-events-cleared', eventId ? `已清除事件 ${eventId} 的进度。` : '已清除全部事件进度。')
+      await this.log(db, requestId, user.id, character.id, 'dev:clear', { eventId }, result)
+      return result
+    })
+  }
+
+  async debugTriggerEvent(
+    actor: ActorIdentity,
+    eventId: string,
+    variantId: string | undefined,
+    requestId: string,
+  ): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+      if (await this.pendingChoice(db, character.id)) return this.failure('pending-choice', '请先处理当前选择。')
+      let event: EventData
+      try {
+        event = this.content.event(eventId)
+      } catch {
+        return this.failure('unknown-event', '没有这个事件。')
+      }
+      const inventory = await this.inventoryMap(db, character.id)
+      const opened = await this.openEventChoice(db, character, eventId, event, inventory, variantId)
+      if (!opened.ok) return opened
+      const result = this.success('debug-event-triggered', opened.message)
+      await this.log(db, requestId, user.id, character.id, 'dev:event', { eventId, variantId }, result)
+      return result
+    })
+  }
+
   async requestSuicide(actor: ActorIdentity, requestId: string): Promise<GameResult> {
     return this.transact(async (db) => {
       const user = await this.resolveUser(db, actor)
@@ -492,7 +782,6 @@ export class DriftService extends Service {
       message = `你收集到了 ${drop.quantity} 份${this.content.item(drop.itemId).name}。`
     } else if (actionId === 'explore') {
       cost = region.explore.apCost
-      const now = this.now()
       const entries = await this.eligibleEventEntries(db, character, region, inventory ?? new Map())
       if (!entries.length) {
         await this.adjustInventory(db, character.id, 'wood', 1)
@@ -500,37 +789,8 @@ export class DriftService extends Service {
       } else {
         const entry = this.pickWeighted(entries)
         const event = this.content.event(entry.eventId)
-        const progress = await this.triggerEvent(db, character, entry.eventId, event, now)
-        const variant = this.pickVariant(event, character, inventory ?? new Map(), progress)
-        const choices = variant.choices.map(choice => {
-          const enabled = this.conditionsSatisfied(choice.conditions, character, inventory ?? new Map(), progress)
-          return {
-            ...choice,
-            enabled,
-            disabledReason: enabled ? undefined : choice.disabledReason ?? this.conditionReason(choice.conditions),
-          }
-        })
-        const defaultOption = choices.find(choice => choice.default)!
-        await db.create('drift_pending_choice', {
-          characterId: character.id,
-          kind: 'event',
-          sourceId: entry.eventId,
-          sourceVersion: this.content.version('event', entry.eventId),
-          variantId: variant.id,
-          defaultOptionId: defaultOption.id,
-          options: choices,
-          createdAt: now,
-          expiresAt: new Date(now.getTime() + this.choiceTimeout),
-        })
-        const title = variant.name ? `${event.name}·${variant.name}` : event.name
-        message = [
-          `${title}：${variant.description}`,
-          ...choices.map((choice, index) => {
-            const disabled = choice.enabled ? '' : `（不可用：${choice.disabledReason}）`
-            return `${index + 1}. ${choice.label}${disabled}`
-          }),
-          `请在 ${this.choiceTimeoutLabel()}内直接发送数字选择。`,
-        ].join('\n')
+        const opened = await this.openEventChoice(db, character, entry.eventId, event, inventory ?? new Map())
+        message = opened.message
       }
     } else if (actionId.startsWith('craft:')) {
       cost = item!.recipe!.apCost
@@ -565,6 +825,50 @@ export class DriftService extends Service {
       updatedAt: character.updatedAt,
     })
     return this.success('action-complete', message, { character: this.characterSnapshot(character) })
+  }
+
+  private async openEventChoice(
+    db: DriftDatabase,
+    character: DriftCharacter,
+    eventId: string,
+    event: EventData,
+    inventory: Map<string, number>,
+    variantId?: string,
+  ): Promise<GameResult> {
+    const forcedVariant = variantId ? event.variants.find(variant => variant.id === variantId) : undefined
+    if (variantId && !forcedVariant) return this.failure('unknown-variant', `事件 ${eventId} 没有表现 ${variantId}。`)
+    const now = this.now()
+    const progress = await this.triggerEvent(db, character, eventId, event, now)
+    const variant = forcedVariant ?? this.pickVariant(event, character, inventory, progress)
+    const choices = variant.choices.map(choice => {
+      const enabled = this.conditionsSatisfied(choice.conditions, character, inventory, progress)
+      return {
+        ...choice,
+        enabled,
+        disabledReason: enabled ? undefined : choice.disabledReason ?? this.conditionReason(choice.conditions),
+      }
+    })
+    const defaultOption = choices.find(choice => choice.default)!
+    await db.create('drift_pending_choice', {
+      characterId: character.id,
+      kind: 'event',
+      sourceId: eventId,
+      sourceVersion: this.content.version('event', eventId),
+      variantId: variant.id,
+      defaultOptionId: defaultOption.id,
+      options: choices,
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + this.choiceTimeout),
+    })
+    const title = variant.name ? `${event.name}·${variant.name}` : event.name
+    return this.success('event-opened', [
+      `${title}：${variant.description}`,
+      ...choices.map((choice, index) => {
+        const disabled = choice.enabled ? '' : `（不可用：${choice.disabledReason}）`
+        return `${index + 1}. ${choice.label}${disabled}`
+      }),
+      `请在 ${this.choiceTimeoutLabel()}内直接发送数字选择。`,
+    ].join('\n'))
   }
 
   private async settleProvision(
@@ -1214,6 +1518,56 @@ export class DriftService extends Service {
     }).formatToParts(date)
     const value = Object.fromEntries(parts.map(part => [part.type, part.value]))
     return `${value.year}-${value.month}-${value.day}`
+  }
+
+  private runtimeContentRows(rows: DriftContent[], definitions: ContentFileDefinition[]) {
+    const result = rows.map(row => ({ ...row }))
+    const indexes = new Map(result.map((row, index) => [`${row.type}:${row.contentId}`, index]))
+    for (const definition of definitions) {
+      const key = contentKey(definition)
+      const index = indexes.get(key)
+      if (index === undefined) {
+        indexes.set(key, result.length)
+        result.push(this.syntheticContentRow(definition, result.length + 1))
+      } else if (result[index].version <= definition.version) {
+        result[index] = {
+          ...result[index],
+          version: definition.version,
+          data: definition.data,
+        }
+      }
+    }
+    return result
+  }
+
+  private syntheticContentRow(definition: ContentFileDefinition, index: number): DriftContent {
+    const now = this.now()
+    return {
+      id: -index,
+      type: definition.type,
+      contentId: definition.contentId,
+      version: definition.version,
+      enabled: true,
+      data: definition.data,
+      createdAt: now,
+      updatedAt: now,
+    }
+  }
+
+  private contentReport(code: string, message: string, sources: ContentSourceSet): ContentReport {
+    return {
+      ok: true,
+      code,
+      message,
+      builtinCount: sources.builtinCount,
+      externalCount: sources.externalCount,
+      totalCount: sources.definitions.length,
+      mode: sources.builtinMode,
+    }
+  }
+
+  private contentFailure(code: string, error: unknown): ContentReport {
+    return { ok: false, code, message: (error as Error).message }
   }
 
   private success(code: string, message: string, snapshot?: GameSnapshot): GameResult {

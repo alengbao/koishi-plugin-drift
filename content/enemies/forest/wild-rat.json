@@ -1,0 +1,18 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "enemy",
+  "contentId": "wild-rat",
+  "version": 1,
+  "data": {
+    "name": "野鼠",
+    "description": "一只护食的野鼠。",
+    "maxHp": 2,
+    "attack": 1,
+    "rewards": [
+      {
+        "itemId": "wood",
+        "quantity": 1
+      }
+    ]
+  }
+}

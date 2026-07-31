@@ -1,0 +1,12 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "wood",
+  "version": 1,
+  "data": {
+    "name": "木材",
+    "description": "可以用于制作和建造的普通木材。",
+    "kind": "resource",
+    "capabilities": []
+  }
+}

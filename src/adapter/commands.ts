@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import type { Command, Context, Session } from 'koishi'
-import type { ActorIdentity, CampView, CharacterHistory, GameSnapshot, InventoryView } from '../core/types'
+import {
+  contentTypes,
+  type ActorIdentity,
+  type CampView,
+  type CharacterHistory,
+  type ContentReport,
+  type ContentType,
+  type GameSnapshot,
+  type InventoryView,
+} from '../core/types'
 import type { DriftService } from '../core/service'
 
 function actorFrom(session: Session): ActorIdentity {
@@ -90,7 +99,36 @@ function alias(command: Command, name: string) {
   return command
 }
 
-export function registerCommands(ctx: Context, drift: DriftService) {
+function renderContentReport(report: ContentReport) {
+  if (!report.ok) return `内容操作失败：${report.message}`
+  const details = [
+    report.mode ? `来源：${report.mode === 'source' ? 'JSON 源码' : '内置 bundle'}` : '',
+    report.totalCount !== undefined ? `内容：${report.totalCount}` : '',
+    report.externalCount !== undefined ? `外部覆盖：${report.externalCount}` : '',
+    report.inserted !== undefined ? `新增：${report.inserted}` : '',
+    report.updated !== undefined ? `更新：${report.updated}` : '',
+    report.skipped !== undefined ? `跳过：${report.skipped}` : '',
+  ].filter(Boolean)
+  return [report.message, details.join('，')].filter(Boolean).join('\n')
+}
+
+function canUseDev(session: Session<'authority'>) {
+  return session.platform.startsWith('sandbox:') || (session.user?.authority ?? 0) >= 4
+}
+
+function devDenied(session: Session<'authority'>) {
+  return canUseDev(session) ? undefined : '测试命令仅允许沙盒用户或权限等级至少为 4 的用户使用。'
+}
+
+export interface CommandOptions {
+  testMode: boolean
+  contentDir: string
+}
+
+export function registerCommands(ctx: Context, drift: DriftService, options: CommandOptions = {
+  testMode: false,
+  contentDir: 'data/drift/content',
+}) {
   ctx.middleware(async (session, next) => {
     if (!session.userId) return next()
     const actor = actorFrom(session)
@@ -189,5 +227,105 @@ export function registerCommands(ctx: Context, drift: DriftService) {
     .action(async ({ session }) => {
       const result = await drift.requestSuicide(actorFrom(session!), requestId(session!, 'suicide'))
       return result.message
+    })
+
+  if (!options.testMode) return
+
+  const devUsage = [
+    `外部内容目录：${options.contentDir}`,
+    '状态：reset、give、hp、ap、clear、event',
+    '内容：check、load、sync、export',
+  ].join('\n')
+
+  ctx.command('drift.dev', 'Drift 测试工具')
+    .userFields(['authority'])
+    .usage(devUsage)
+    .action(({ session }) => devDenied(session!) ?? devUsage)
+
+  ctx.command('drift.dev.reset', '重置当前角色')
+    .userFields(['authority'])
+    .action(async ({ session }) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.resetCharacter(actorFrom(session!), requestId(session!, 'dev:reset'))).message
+    })
+
+  ctx.command('drift.dev.give <item:string> [quantity:number]', '发放物品')
+    .userFields(['authority'])
+    .action(async ({ session }, item, quantity = 1) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.debugGiveItem(actorFrom(session!), item, quantity, requestId(session!, `dev:give:${item}`))).message
+    })
+
+  ctx.command('drift.dev.hp <value:number>', '设置生命值')
+    .userFields(['authority'])
+    .action(async ({ session }, value) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.debugSetStat(actorFrom(session!), 'hp', value, requestId(session!, 'dev:hp'))).message
+    })
+
+  ctx.command('drift.dev.ap <value:number>', '设置行动点')
+    .userFields(['authority'])
+    .action(async ({ session }, value) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.debugSetStat(actorFrom(session!), 'ap', value, requestId(session!, 'dev:ap'))).message
+    })
+
+  ctx.command('drift.dev.clear [eventId:string]', '清除事件进度')
+    .userFields(['authority'])
+    .action(async ({ session }, eventId) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.debugClearEvents(actorFrom(session!), eventId, requestId(session!, `dev:clear:${eventId ?? 'all'}`))).message
+    })
+
+  ctx.command('drift.dev.event <eventId:string> [variantId:string]', '直接触发事件')
+    .userFields(['authority'])
+    .action(async ({ session }, eventId, variantId) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return (await drift.debugTriggerEvent(
+        actorFrom(session!),
+        eventId,
+        variantId,
+        requestId(session!, `dev:event:${eventId}:${variantId ?? 'auto'}`),
+      )).message
+    })
+
+  ctx.command('drift.dev.check', '校验 JSON 内容')
+    .userFields(['authority'])
+    .action(async ({ session }) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return renderContentReport(await drift.checkContent())
+    })
+
+  ctx.command('drift.dev.load', '热加载 JSON 内容')
+    .userFields(['authority'])
+    .action(async ({ session }) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return renderContentReport(await drift.loadContent())
+    })
+
+  ctx.command('drift.dev.sync', '发布 JSON 内容到数据库')
+    .userFields(['authority'])
+    .action(async ({ session }) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      return renderContentReport(await drift.syncContent())
+    })
+
+  ctx.command('drift.dev.export <type:string> <contentId:string>', '导出有效内容到外部目录')
+    .userFields(['authority'])
+    .option('force', '--force 强制覆盖已有文件')
+    .action(async ({ session, options: commandOptions }, type, contentId) => {
+      const denied = devDenied(session!)
+      if (denied) return denied
+      if (!contentTypes.includes(type as ContentType)) return `内容类型必须是：${contentTypes.join('、')}`
+      return renderContentReport(await drift.exportContent(type as ContentType, contentId, !!commandOptions?.force))
     })
 }

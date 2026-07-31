@@ -1,0 +1,57 @@
+{
+  "$schema": "../drift-content.schema.json",
+  "type": "region",
+  "contentId": "forest",
+  "version": 2,
+  "data": {
+    "name": "森林",
+    "description": "潮湿而寂静的林地。",
+    "collect": {
+      "apCost": 1,
+      "drops": [
+        {
+          "itemId": "wood",
+          "quantity": 1,
+          "weight": 3
+        },
+        {
+          "itemId": "stone",
+          "quantity": 1,
+          "weight": 1
+        }
+      ]
+    },
+    "explore": {
+      "apCost": 1,
+      "eventPool": [
+        {
+          "eventId": "forest-trapped-animal",
+          "weight": 4
+        },
+        {
+          "eventId": "forest-strange-fungi",
+          "weight": 5
+        },
+        {
+          "eventId": "forest-fallen-tree",
+          "weight": 3
+        },
+        {
+          "eventId": "forest-night-glow",
+          "weight": 4
+        },
+        {
+          "eventId": "forest-tree-hole-creature",
+          "weight": 2
+        },
+        {
+          "eventId": "forest-rustle",
+          "weight": 1
+        }
+      ]
+    },
+    "buildingIds": [
+      "shelter"
+    ]
+  }
+}

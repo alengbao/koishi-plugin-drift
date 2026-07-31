@@ -1,0 +1,24 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "building",
+  "contentId": "shelter",
+  "version": 1,
+  "data": {
+    "name": "庇护所",
+    "description": "一个简陋但属于你的落脚点。",
+    "allowedRegionIds": [
+      "forest"
+    ],
+    "apCost": 1,
+    "costs": [
+      {
+        "itemId": "wood",
+        "quantity": 3
+      }
+    ],
+    "maxLevel": 1,
+    "effect": {
+      "type": "none"
+    }
+  }
+}

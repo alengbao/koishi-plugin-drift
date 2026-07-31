@@ -1,0 +1,206 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "event",
+  "contentId": "forest-tree-hole-creature",
+  "version": 1,
+  "data": {
+    "name": "树洞中的无名生物",
+    "regionIds": [
+      "forest"
+    ],
+    "conditions": [],
+    "maxOccurrences": 3,
+    "cooldownMs": 86400000,
+    "fallbackVariantId": "third",
+    "variants": [
+      {
+        "id": "first",
+        "description": "树洞深处亮着一双眼睛，一只小爪谨慎地伸了出来。",
+        "occurrence": {
+          "min": 1,
+          "max": 1
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "trade",
+            "label": "递出口粮",
+            "conditions": [
+              {
+                "type": "inventory",
+                "itemId": "ration",
+                "quantity": 1
+              }
+            ],
+            "disabledReason": "缺少 1 份口粮",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "consumeItem",
+                  "itemId": "ration",
+                  "quantity": 1
+                },
+                {
+                  "type": "gainItem",
+                  "itemId": "stone",
+                  "quantity": 2
+                }
+              ],
+              "message": "无名生物收下食物，把树洞里的东西推到了你面前。"
+            }
+          },
+          {
+            "id": "observe",
+            "label": "留在原地观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你等了一会儿，它仍没有离开树洞。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "second",
+        "description": "那双眼睛再次出现，树洞口摆着几缕发光苔。",
+        "occurrence": {
+          "min": 2,
+          "max": 2
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "trade",
+            "label": "递出野生菌",
+            "conditions": [
+              {
+                "type": "inventory",
+                "itemId": "wild-mushroom",
+                "quantity": 1
+              }
+            ],
+            "disabledReason": "缺少 1 份野生菌",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "consumeItem",
+                  "itemId": "wild-mushroom",
+                  "quantity": 1
+                },
+                {
+                  "type": "gainItem",
+                  "itemId": "glow-moss",
+                  "quantity": 2
+                }
+              ],
+              "message": "无名生物收下食物，把树洞里的东西推到了你面前。"
+            }
+          },
+          {
+            "id": "observe",
+            "label": "留在原地观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你等了一会儿，它仍没有离开树洞。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "third",
+        "description": "无名生物已经不再躲藏，只在树洞边等待你的交换。",
+        "occurrence": {
+          "min": 3,
+          "max": 3
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "trade",
+            "label": "递出口粮",
+            "conditions": [
+              {
+                "type": "inventory",
+                "itemId": "ration",
+                "quantity": 1
+              }
+            ],
+            "disabledReason": "缺少 1 份口粮",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "consumeItem",
+                  "itemId": "ration",
+                  "quantity": 1
+                },
+                {
+                  "type": "gainItem",
+                  "itemId": "stone",
+                  "quantity": 3
+                },
+                {
+                  "type": "gainItem",
+                  "itemId": "glow-moss",
+                  "quantity": 1
+                }
+              ],
+              "message": "无名生物收下食物，把树洞里的东西推到了你面前。"
+            }
+          },
+          {
+            "id": "observe",
+            "label": "留在原地观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你等了一会儿，它仍没有离开树洞。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

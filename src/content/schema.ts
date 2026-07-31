@@ -212,7 +212,16 @@ export const contentDefinitionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('event'), contentId: id, data: eventDataSchema }),
 ])
 
+export const contentFileSchema = z.intersection(
+  z.object({
+    $schema: z.string().optional(),
+    version: positiveInteger,
+  }),
+  contentDefinitionSchema,
+)
+
 export type ContentDefinition = z.infer<typeof contentDefinitionSchema>
+export type ContentFileDefinition = z.infer<typeof contentFileSchema>
 export type RegionData = z.infer<typeof regionDataSchema>
 export type ItemData = z.infer<typeof itemDataSchema>
 export type EnemyData = z.infer<typeof enemyDataSchema>

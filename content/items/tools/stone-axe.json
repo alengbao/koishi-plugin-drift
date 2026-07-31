@@ -1,0 +1,28 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "stone-axe",
+  "version": 1,
+  "data": {
+    "name": "石斧",
+    "description": "粗糙但足以切割木材的石制工具。",
+    "kind": "tool",
+    "capabilities": [
+      "cut-wood"
+    ],
+    "recipe": {
+      "apCost": 1,
+      "ingredients": [
+        {
+          "itemId": "wood",
+          "quantity": 2
+        },
+        {
+          "itemId": "stone",
+          "quantity": 1
+        }
+      ],
+      "outputQuantity": 1
+    }
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "event",
+  "contentId": "forest-trapped-animal",
+  "version": 1,
+  "data": {
+    "name": "被困的小兽",
+    "regionIds": [
+      "forest"
+    ],
+    "conditions": [],
+    "maxOccurrences": 3,
+    "cooldownMs": 86400000,
+    "fallbackVariantId": "third",
+    "variants": [
+      {
+        "id": "first",
+        "description": "一只灰兔被旧绳套勒住后腿，正徒劳地挣扎。",
+        "occurrence": {
+          "min": 1,
+          "max": 1
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "release",
+            "label": "解开束缚",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "小兽恢复自由，很快消失在灌木后。"
+            }
+          },
+          {
+            "id": "take-food",
+            "label": "带走作为食物",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "ration",
+                  "quantity": 1
+                }
+              ],
+              "message": "你把猎物处理成了 1 份口粮。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "second",
+        "description": "一只幼小的林鸟被细藤缠在低矮枝杈间。",
+        "occurrence": {
+          "min": 2,
+          "max": 2
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "release",
+            "label": "解开束缚",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "小兽恢复自由，很快消失在灌木后。"
+            }
+          },
+          {
+            "id": "take-food",
+            "label": "带走作为食物",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "ration",
+                  "quantity": 1
+                }
+              ],
+              "message": "你把猎物处理成了 1 份口粮。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "third",
+        "description": "灌木下又有一只受困的小兽，陷阱周围没有留下主人踪迹。",
+        "occurrence": {
+          "min": 3,
+          "max": 3
+        },
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "release",
+            "label": "解开束缚",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "小兽恢复自由，很快消失在灌木后。"
+            }
+          },
+          {
+            "id": "take-food",
+            "label": "带走作为食物",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "ration",
+                  "quantity": 1
+                }
+              ],
+              "message": "你把猎物处理成了 1 份口粮。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

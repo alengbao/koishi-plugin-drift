@@ -1,0 +1,13 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "wild-mushroom",
+  "version": 1,
+  "data": {
+    "name": "野生菌",
+    "description": "来自林地菌群的食材，是否安全仍需谨慎判断。",
+    "kind": "food",
+    "capabilities": [],
+    "nutrition": 1
+  }
+}

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { ContentStore } from '../src/content/store'
 import { contentDefinitionSchema } from '../src/content/schema'
-import { seedContent } from '../src/content/seeds'
+import { readBuiltinContent } from '../src/content/files'
 import type { DriftContent } from '../src/storage/schema'
 
-function rows(): DriftContent[] {
+async function rows(): Promise<DriftContent[]> {
   const now = new Date()
-  return seedContent.map((seed, index) => ({
+  const builtin = await readBuiltinContent(true)
+  return builtin.definitions.map((seed, index) => ({
     id: index + 1,
     type: seed.type,
     contentId: seed.contentId,
@@ -19,34 +20,35 @@ function rows(): DriftContent[] {
 }
 
 describe('content validation', () => {
-  it('loads the complete seed graph', () => {
+  it('loads the complete JSON content graph', async () => {
     const store = new ContentStore()
-    store.load(rows())
-    expect(rows()).toHaveLength(15)
+    const content = await rows()
+    store.load(content)
+    expect(content).toHaveLength(15)
     expect(store.region('forest').name).toBe('森林')
     expect(store.item('ration').recipe?.ingredients).toEqual([{ itemId: 'wood', quantity: 2 }])
     expect(store.item('stone-axe').capabilities).toEqual(['cut-wood'])
     expect(store.enemy('wild-rat').maxHp).toBe(2)
   })
 
-  it('rejects malformed content with its id in the error', () => {
-    const content = rows()
+  it('rejects malformed content with its id in the error', async () => {
+    const content = await rows()
     content.find(row => row.contentId === 'wild-rat')!.data = { name: 'broken' }
     expect(() => new ContentStore().load(content)).toThrow('enemy:wild-rat')
   })
 
-  it('rejects missing cross-content references', () => {
-    const content = rows().filter(row => row.contentId !== 'wood')
+  it('rejects missing cross-content references', async () => {
+    const content = (await rows()).filter(row => row.contentId !== 'wood')
     expect(() => new ContentStore().load(content)).toThrow('item:wood')
   })
 
-  it('rejects invalid defaults and missing tool capabilities', () => {
-    const invalidDefault = rows()
+  it('rejects invalid defaults and missing tool capabilities', async () => {
+    const invalidDefault = await rows()
     const event = invalidDefault.find(row => row.contentId === 'forest-trapped-animal')!
     for (const choice of event.data.variants[0].choices) choice.default = false
     expect(() => new ContentStore().load(invalidDefault)).toThrow('event:forest-trapped-animal')
 
-    const missingCapability = rows()
+    const missingCapability = await rows()
     missingCapability.find(row => row.contentId === 'stone-axe')!.data.capabilities = []
     expect(() => new ContentStore().load(missingCapability)).toThrow('物品能力:cut-wood')
   })

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -20,7 +20,12 @@ describe('DriftService with SQLite', () => {
     await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
   })
 
-  async function createService(path = ':memory:', choiceTimeout = 5 * 60 * 1000, initialRandom = 0) {
+  async function createService(
+    path = ':memory:',
+    choiceTimeout = 5 * 60 * 1000,
+    initialRandom = 0,
+    contentDir?: string,
+  ) {
     let current = new Date('2026-07-30T04:00:00.000Z')
     let randomValue = initialRandom
     const ctx = new Context()
@@ -32,7 +37,12 @@ describe('DriftService with SQLite', () => {
       inject: ['database'],
       apply(pluginContext: Context) {
         defineModels(pluginContext)
-        service = new DriftService(pluginContext, { now: () => current, random: () => randomValue, choiceTimeout })
+        service = new DriftService(pluginContext, {
+          now: () => current,
+          random: () => randomValue,
+          choiceTimeout,
+          contentDir,
+        })
       },
     })
     await ctx.start()
@@ -531,5 +541,95 @@ describe('DriftService with SQLite', () => {
     expect(updated.version).toBe(1)
     expect(updated.data).toMatchObject({ name: '木材', description: '可以用于制作和建造的普通木材。' })
     await second.ctx.stop()
+  })
+
+  it('supports idempotent developer state controls', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('developer'), '测试角色', 'developer-create')
+    const characterId = await activeCharacterId(game.ctx, 'developer')
+
+    await game.service.debugGiveItem(actor('developer'), '木材', 5, 'developer-give')
+    await game.service.debugSetStat(actor('developer'), 'hp', 1, 'developer-hp')
+    await game.service.debugSetStat(actor('developer'), 'ap', 0, 'developer-ap')
+    const triggered = await game.service.debugTriggerEvent(
+      actor('developer'),
+      'forest-fallen-tree',
+      'third',
+      'developer-event',
+    )
+    expect(triggered.message).toContain('巨树只剩下')
+    expect(await game.service.debugTriggerEvent(
+      actor('developer'),
+      'forest-trapped-animal',
+      undefined,
+      'developer-event-while-pending',
+    )).toMatchObject({ ok: false, code: 'pending-choice' })
+
+    await game.service.debugClearEvents(actor('developer'), 'forest-fallen-tree', 'developer-clear')
+    expect(await game.ctx.database.get('drift_pending_choice', { characterId })).toHaveLength(0)
+    expect(await game.ctx.database.get('drift_character_event', { characterId })).toHaveLength(0)
+
+    const firstReset = await game.service.resetCharacter(actor('developer'), 'developer-reset')
+    const repeatedReset = await game.service.resetCharacter(actor('developer'), 'developer-reset')
+    expect(repeatedReset).toEqual(firstReset)
+    expect((await game.service.getStatus(actor('developer'))).character).toMatchObject({
+      id: characterId,
+      hp: 3,
+      maxHp: 3,
+      actionPoints: 3,
+      maxActionPoints: 3,
+      regionId: 'forest',
+      hungerDays: 0,
+    })
+    expect((await game.service.getInventory(actor('developer'))).items).toEqual([
+      { itemId: 'ration', name: '口粮', quantity: 1 },
+    ])
+    expect(await game.ctx.database.get('drift_action_log', { characterId })).not.toHaveLength(0)
+  })
+
+  it('checks, hot-loads, syncs, and exports external JSON content', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'drift-content-test-'))
+    temporaryDirectories.push(directory)
+    const contentDir = join(directory, 'content')
+    const itemDir = join(contentDir, 'items')
+    await mkdir(itemDir, { recursive: true })
+    const game = await createService(':memory:', 5 * 60 * 1000, 0, contentDir)
+    await game.service.createCharacter(actor('content-dev'), '内容测试者', 'content-dev-create')
+    const [wood] = await game.ctx.database.get('drift_content', { type: 'item', contentId: 'wood' })
+    const overridePath = join(itemDir, 'wood.json')
+    const override = {
+      type: 'item',
+      contentId: 'wood',
+      version: 2,
+      data: { ...wood.data, name: '测试木材' },
+    }
+    await writeFile(overridePath, `${JSON.stringify(override, null, 2)}\n`)
+
+    expect(await game.service.checkContent()).toMatchObject({ ok: true, externalCount: 1, totalCount: 15 })
+    expect(await game.service.loadContent()).toMatchObject({ ok: true, code: 'content-loaded' })
+    expect(await game.service.debugGiveItem(actor('content-dev'), '测试木材', 1, 'content-dev-give')).toMatchObject({ ok: true })
+
+    await writeFile(overridePath, `${JSON.stringify({
+      ...override,
+      data: { ...override.data, recipe: { apCost: 1, ingredients: [{ itemId: 'missing', quantity: 1 }], outputQuantity: 1 } },
+    }, null, 2)}\n`)
+    expect(await game.service.loadContent()).toMatchObject({ ok: false, code: 'content-load-failed' })
+    expect(await game.service.debugGiveItem(actor('content-dev'), '测试木材', 1, 'content-dev-give-after-failure')).toMatchObject({ ok: true })
+
+    await writeFile(overridePath, `${JSON.stringify(override, null, 2)}\n`)
+    expect(await game.service.syncContent()).toMatchObject({ ok: true, updated: 1 })
+    const [published] = await game.ctx.database.get('drift_content', { type: 'item', contentId: 'wood' })
+    expect(published).toMatchObject({ version: 2, data: expect.objectContaining({ name: '测试木材' }) })
+
+    await writeFile(overridePath, `${JSON.stringify({
+      ...override,
+      data: { ...override.data, description: '同版本冲突' },
+    }, null, 2)}\n`)
+    expect(await game.service.syncContent()).toMatchObject({ ok: false, code: 'content-sync-failed' })
+    const exportResult = await game.service.exportContent('item', 'ration', false)
+    expect(exportResult).toMatchObject({ ok: true, code: 'content-exported' })
+    const exported = JSON.parse(await readFile(exportResult.path!, 'utf8'))
+    expect(exported).toMatchObject({ type: 'item', contentId: 'ration', version: 2 })
+    expect(await game.service.exportContent('item', 'ration', false)).toMatchObject({ ok: false })
   })
 })

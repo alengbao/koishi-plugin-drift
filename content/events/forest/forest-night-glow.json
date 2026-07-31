@@ -1,0 +1,152 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "event",
+  "contentId": "forest-night-glow",
+  "version": 1,
+  "data": {
+    "name": "夜间微光",
+    "regionIds": [
+      "forest"
+    ],
+    "conditions": [
+      {
+        "type": "localTime",
+        "start": "20:00",
+        "end": "06:00"
+      }
+    ],
+    "cooldownMs": 72000000,
+    "fallbackVariantId": "moss",
+    "variants": [
+      {
+        "id": "moss",
+        "description": "树根间覆着一片散发冷光的苔藓。",
+        "conditions": [],
+        "weight": 3,
+        "choices": [
+          {
+            "id": "collect-glow",
+            "label": "靠近采集",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "glow-moss",
+                  "quantity": 2
+                }
+              ],
+              "message": "你采到了 2 份发光苔。"
+            }
+          },
+          {
+            "id": "observe",
+            "label": "在远处观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你在安全距离观察了这片微光。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "spores",
+        "description": "蓝白色孢子在空气中起伏，靠近时皮肤隐隐刺痛。",
+        "conditions": [],
+        "weight": 2,
+        "choices": [
+          {
+            "id": "collect-glow",
+            "label": "靠近采集",
+            "conditions": [
+              {
+                "type": "hp",
+                "operator": "gte",
+                "value": 2
+              }
+            ],
+            "disabledReason": "生命不足，无法冒险接近刺痛的孢子",
+            "default": false,
+            "outcome": {
+              "type": "effects",
+              "effects": [
+                {
+                  "type": "gainItem",
+                  "itemId": "glow-moss",
+                  "quantity": 1
+                },
+                {
+                  "type": "adjustHp",
+                  "amount": -1
+                }
+              ],
+              "message": "你采到了 1 份发光苔，但失去了 1 点生命。"
+            }
+          },
+          {
+            "id": "observe",
+            "label": "在远处观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你在安全距离观察了这片微光。"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      },
+      {
+        "id": "fireflies",
+        "description": "一群萤光小虫绕着空心树桩缓慢盘旋。",
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "observe",
+            "label": "静静观察",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "nothing",
+              "message": "你记住了萤光小虫飞行的轨迹。"
+            }
+          },
+          {
+            "id": "leave-glow",
+            "label": "安全离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你没有打扰这里，转身离开了。"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

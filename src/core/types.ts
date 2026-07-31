@@ -83,6 +83,20 @@ export interface GameResult {
   snapshot?: GameSnapshot
 }
 
+export interface ContentReport {
+  ok: boolean
+  code: string
+  message: string
+  builtinCount?: number
+  externalCount?: number
+  totalCount?: number
+  inserted?: number
+  updated?: number
+  skipped?: number
+  mode?: 'source' | 'bundle'
+  path?: string
+}
+
 export type PendingOutcome = EventOutcome | { type: 'suicideConfirm' } | { type: 'cancel' }
 
 export interface PendingOption {

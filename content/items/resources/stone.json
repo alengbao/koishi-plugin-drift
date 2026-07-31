@@ -1,0 +1,12 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "stone",
+  "version": 1,
+  "data": {
+    "name": "石块",
+    "description": "能够打磨成简单工具的坚硬石块。",
+    "kind": "resource",
+    "capabilities": []
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "event",
+  "contentId": "forest-rustle",
+  "version": 2,
+  "data": {
+    "name": "灌木中的动静",
+    "regionIds": [
+      "forest"
+    ],
+    "conditions": [],
+    "cooldownMs": 86400000,
+    "fallbackVariantId": "main",
+    "variants": [
+      {
+        "id": "main",
+        "description": "前方的灌木突然剧烈摇晃。",
+        "conditions": [],
+        "weight": 1,
+        "choices": [
+          {
+            "id": "investigate",
+            "label": "上前调查",
+            "conditions": [],
+            "default": false,
+            "outcome": {
+              "type": "combat",
+              "enemyId": "wild-rat"
+            }
+          },
+          {
+            "id": "leave",
+            "label": "悄悄离开",
+            "conditions": [],
+            "default": true,
+            "outcome": {
+              "type": "nothing",
+              "message": "你避开了未知的麻烦。"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

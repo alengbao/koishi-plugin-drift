@@ -41,5 +41,31 @@ describe('command registration', () => {
     ]) {
       expect(ctx.$commander.get(name), name).toBeTruthy()
     }
+    expect(ctx.$commander.get('drift.dev')).toBeFalsy()
+  })
+
+  it('only registers the short developer commands in test mode', () => {
+    ctx = new Context()
+    ctx.plugin(SQLite, { path: ':memory:' })
+    apply(ctx, {
+      choiceTimeout: 5 * 60 * 1000,
+      testMode: true,
+      contentDir: 'data/drift/content',
+    })
+    for (const name of [
+      'drift.dev',
+      'drift.dev.reset',
+      'drift.dev.give',
+      'drift.dev.hp',
+      'drift.dev.ap',
+      'drift.dev.clear',
+      'drift.dev.event',
+      'drift.dev.check',
+      'drift.dev.load',
+      'drift.dev.sync',
+      'drift.dev.export',
+    ]) {
+      expect(ctx.$commander.get(name), name).toBeTruthy()
+    }
   })
 })
