@@ -52,6 +52,11 @@ const actionCommands: Record<string, string> = {
   'build:shelter': 'drift build shelter',
 }
 
+function actionCommand(actionId: string) {
+  if (actionId.startsWith('craft:')) return `drift craft ${actionId.slice('craft:'.length)}`
+  return actionCommands[actionId] ?? actionId
+}
+
 function renderInventory(view: InventoryView) {
   if (!view.characterId) return '你还没有存活角色。'
   if (!view.items.length) return '背包是空的。'
@@ -68,6 +73,7 @@ const deathCauseNames = {
   combat: '战斗',
   hunger: '饥饿',
   suicide: '自尽',
+  event: '探索事件',
 } as const
 
 function renderHistory(history: CharacterHistory) {
@@ -86,10 +92,14 @@ function alias(command: Command, name: string) {
 
 export function registerCommands(ctx: Context, drift: DriftService) {
   ctx.middleware(async (session, next) => {
+    if (!session.userId) return next()
+    const actor = actorFrom(session)
+    const timeout = await drift.settleExpiredChoice(actor, requestId(session, 'choice-timeout'))
+    if (timeout) return timeout.message
     const content = session.content?.trim() ?? ''
-    if (!/^[1-9]\d*$/.test(content) || !session.userId) return next()
+    if (!/^[1-9]\d*$/.test(content)) return next()
     const result = await drift.resolveChoiceByIndex(
-      actorFrom(session),
+      actor,
       Number(content),
       requestId(session, `choice-index:${content}`),
     )
@@ -118,12 +128,15 @@ export function registerCommands(ctx: Context, drift: DriftService) {
       if (!actions.length) return '你还没有存活角色。使用 drift.create [名字] 创建角色。'
       if (actions[0].actionId.startsWith('choice:')) {
         return [
-          ...actions.map(action => `${action.index}. ${action.label}`),
+          ...actions.map(action => {
+            const disabled = action.enabled ? '' : `（不可用：${action.disabledReason}）`
+            return `${action.index}. ${action.label}${disabled}`
+          }),
           '请直接发送数字选择。',
         ].join('\n')
       }
       return actions.map(action => {
-        const command = actionCommands[action.actionId] ?? action.actionId
+        const command = actionCommand(action.actionId)
         const cost = action.apCost ? `（${action.apCost} AP）` : ''
         const disabled = action.enabled ? '' : `（不可用：${action.disabledReason}）`
         return `${command} - ${action.label}${cost}${disabled}`
@@ -144,11 +157,12 @@ export function registerCommands(ctx: Context, drift: DriftService) {
 
   alias(ctx.command('drift.craft [item:string]', '制作物品'), '漂流.制作')
     .action(async ({ session }, item) => {
-      const normalized = item?.trim().toLowerCase()
-      if (normalized && normalized !== 'ration' && normalized !== '口粮') {
-        return '第一版只能制作口粮。使用 drift craft ration。'
+      const itemId = drift.findCraftableItem(item)
+      if (!itemId) {
+        const available = drift.craftableItems().map(([id, data]) => `${id}（${data.name}）`).join('、')
+        return `没有这个制作配方。可制作：${available}`
       }
-      const result = await drift.executeAction(actorFrom(session!), 'craft:ration', requestId(session!, 'craft:ration'))
+      const result = await drift.executeAction(actorFrom(session!), `craft:${itemId}`, requestId(session!, `craft:${itemId}`))
       return result.message
     })
 

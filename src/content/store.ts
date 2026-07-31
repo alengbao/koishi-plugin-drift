@@ -1,5 +1,14 @@
 import type { DriftContent } from '../storage/schema'
-import type { BuildingData, ContentDefinition, EnemyData, EventData, ItemData, RegionData } from './schema'
+import type {
+  BuildingData,
+  ContentDefinition,
+  EnemyData,
+  EventCondition,
+  EventData,
+  EventOutcome,
+  ItemData,
+  RegionData,
+} from './schema'
 import { contentDefinitionSchema } from './schema'
 import type { ContentType } from '../core/types'
 
@@ -52,7 +61,12 @@ export class ContentStore {
   private validateReferences() {
     for (const [id, region] of this.regions) {
       for (const drop of region.collect.drops) this.require(this.items, 'item', drop.itemId, `region:${id}`)
-      for (const entry of region.explore.eventPool) this.require(this.events, 'event', entry.eventId, `region:${id}`)
+      for (const entry of region.explore.eventPool) {
+        this.require(this.events, 'event', entry.eventId, `region:${id}`)
+        if (!this.events.get(entry.eventId)!.regionIds.includes(id)) {
+          throw new Error(`内容 region:${id} 引用了不属于该地区的 event:${entry.eventId}`)
+        }
+      }
       for (const buildingId of region.buildingIds) this.require(this.buildings, 'building', buildingId, `region:${id}`)
     }
     for (const [id, item] of this.items) {
@@ -67,9 +81,34 @@ export class ContentStore {
     }
     for (const [id, event] of this.events) {
       for (const regionId of event.regionIds) this.require(this.regions, 'region', regionId, `event:${id}`)
-      for (const choice of event.choices) {
-        if (choice.outcome.type === 'gainItem') this.require(this.items, 'item', choice.outcome.itemId, `event:${id}`)
-        if (choice.outcome.type === 'combat') this.require(this.enemies, 'enemy', choice.outcome.enemyId, `event:${id}`)
+      for (const condition of event.conditions) this.validateCondition(condition, `event:${id}`)
+      for (const variant of event.variants) {
+        for (const condition of variant.conditions) this.validateCondition(condition, `event:${id}:${variant.id}`)
+        for (const choice of variant.choices) {
+          for (const condition of choice.conditions) this.validateCondition(condition, `event:${id}:${variant.id}:${choice.id}`)
+          this.validateOutcome(choice.outcome, `event:${id}:${variant.id}:${choice.id}`)
+        }
+      }
+    }
+  }
+
+  private validateCondition(condition: EventCondition, owner: string) {
+    if (condition.type === 'inventory') {
+      this.require(this.items, 'item', condition.itemId, owner)
+    } else if (condition.type === 'capability') {
+      if (![...this.items.values()].some(item => item.capabilities.includes(condition.capability))) {
+        throw new Error(`内容 ${owner} 引用了不存在的物品能力:${condition.capability}`)
+      }
+    }
+  }
+
+  private validateOutcome(outcome: EventOutcome, owner: string) {
+    if (outcome.type === 'gainItem') this.require(this.items, 'item', outcome.itemId, owner)
+    if (outcome.type === 'combat') this.require(this.enemies, 'enemy', outcome.enemyId, owner)
+    if (outcome.type !== 'effects') return
+    for (const effect of outcome.effects) {
+      if (effect.type === 'gainItem' || effect.type === 'consumeItem') {
+        this.require(this.items, 'item', effect.itemId, owner)
       }
     }
   }
@@ -82,6 +121,14 @@ export class ContentStore {
   version(type: ContentType, id: string) { return this.required(this.versions, type, `${type}:${id}`) }
 
   itemEntries() { return [...this.items.entries()] }
+  craftableItems() { return this.itemEntries().filter(([, item]) => item.recipe) }
+
+  findCraftableItem(query: string) {
+    const normalized = query.trim().toLowerCase()
+    return this.craftableItems().find(([itemId, item]) => (
+      itemId.toLowerCase() === normalized || item.name === query.trim()
+    ))
+  }
 
   private required<T>(map: Map<string, T>, type: string, id: string): T {
     const value = map.get(id)

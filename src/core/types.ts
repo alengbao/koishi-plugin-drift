@@ -1,8 +1,10 @@
+import type { EventCondition, EventOutcome } from '../content/schema'
+
 export const contentTypes = ['region', 'item', 'enemy', 'building', 'event'] as const
 export type ContentType = typeof contentTypes[number]
 
 export type CharacterStatus = 'active' | 'dead'
-export type DeathCause = 'combat' | 'hunger' | 'suicide'
+export type DeathCause = 'combat' | 'hunger' | 'suicide' | 'event'
 export type PendingChoiceKind = 'event' | 'suicide'
 
 export interface ActorIdentity {
@@ -81,15 +83,14 @@ export interface GameResult {
   snapshot?: GameSnapshot
 }
 
-export type EventOutcome =
-  | { type: 'nothing', message: string }
-  | { type: 'gainItem', itemId: string, quantity: number, message: string }
-  | { type: 'combat', enemyId: string }
-
 export type PendingOutcome = EventOutcome | { type: 'suicideConfirm' } | { type: 'cancel' }
 
 export interface PendingOption {
   id: string
   label: string
   outcome: PendingOutcome
+  conditions?: EventCondition[]
+  enabled?: boolean
+  disabledReason?: string
+  default?: boolean
 }

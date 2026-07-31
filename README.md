@@ -25,7 +25,7 @@ drift.status
 drift.actions
 drift.collect
 drift.explore
-drift.craft [ration]
+drift.craft [ration|stone-axe]
 drift.build [shelter]
 drift.inventory
 drift.camp
@@ -45,4 +45,13 @@ reset by a seed update.
 Ordinary actions use explicit subcommands. When an event or confirmation is
 pending, reply with its option number directly; no choose command is needed.
 Numeric choices expire after five minutes by default, and the timeout can be
-changed in the plugin configuration.
+changed in the plugin configuration. An expired choice uses its safe default
+when the player next sends a message; that message only returns the settlement
+and must be sent again if it was also intended as a command.
+
+Forest exploration filters events by conditions, per-character occurrence
+limits, and real-time cooldowns before applying weights. It includes trapped
+animals, strange fungi, fallen trees, night-only lights, a tree-hole creature,
+and the original low-weight combat event. Ordinary collection yields wood or
+stone. A stone axe can be crafted from two wood and one stone and unlocks the
+high-yield fallen-tree option without being consumed.

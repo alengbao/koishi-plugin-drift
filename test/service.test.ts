@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from 'koishi'
 import SQLite from '@koishijs/plugin-database-sqlite'
 import { DriftService } from '../src/core/service'
+import { ContentStore } from '../src/content/store'
 import type { ActorIdentity } from '../src/core/types'
 import { defineModels } from '../src/storage/schema'
 
@@ -19,8 +20,9 @@ describe('DriftService with SQLite', () => {
     await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
   })
 
-  async function createService(path = ':memory:', choiceTimeout = 5 * 60 * 1000) {
+  async function createService(path = ':memory:', choiceTimeout = 5 * 60 * 1000, initialRandom = 0) {
     let current = new Date('2026-07-30T04:00:00.000Z')
+    let randomValue = initialRandom
     const ctx = new Context()
     contexts.push(ctx)
     ctx.plugin(SQLite, { path })
@@ -30,7 +32,7 @@ describe('DriftService with SQLite', () => {
       inject: ['database'],
       apply(pluginContext: Context) {
         defineModels(pluginContext)
-        service = new DriftService(pluginContext, { now: () => current, random: () => 0, choiceTimeout })
+        service = new DriftService(pluginContext, { now: () => current, random: () => randomValue, choiceTimeout })
       },
     })
     await ctx.start()
@@ -38,14 +40,21 @@ describe('DriftService with SQLite', () => {
       ctx,
       service,
       setNow(value: string) { current = new Date(value) },
+      setRandom(value: number) { randomValue = value },
     }
   }
 
-  it('creates all eight tables and seeds content', async () => {
+  async function activeCharacterId(ctx: Context, platformUserId: string) {
+    const [identity] = await ctx.database.get('drift_identity', { platform: 'test', platformUserId })
+    const [user] = await ctx.database.get('drift_user', { id: identity.userId })
+    return user.activeCharacterId!
+  }
+
+  it('creates all nine tables and seeds content', async () => {
     const { ctx } = await createService()
     const tableNames = Object.keys(ctx.model.tables).filter(name => name.startsWith('drift_'))
-    expect(tableNames).toHaveLength(8)
-    expect(await ctx.database.get('drift_content', {})).toHaveLength(6)
+    expect(tableNames).toHaveLength(9)
+    expect(await ctx.database.get('drift_content', {})).toHaveLength(15)
   })
 
   it('creates a default character and makes repeated writes idempotent', async () => {
@@ -99,6 +108,7 @@ describe('DriftService with SQLite', () => {
     expect(built.message).toContain('庇护所')
     expect((await game.service.getCamp(actor('builder'))).buildings).toHaveLength(1)
 
+    game.setRandom(0.999)
     await game.service.createCharacter(actor('fighter'), '战士', 'fighter-create')
     await game.service.executeAction(actor('fighter'), 'explore', 'fighter-explore')
     const choices = await game.service.listActions(actor('fighter'))
@@ -107,6 +117,7 @@ describe('DriftService with SQLite', () => {
     expect(combat.code).toBe('combat-won')
     expect((await game.service.getStatus(actor('fighter'))).character?.hp).toBe(2)
 
+    game.setRandom(0)
     await game.service.createCharacter(actor('crafter'), '工匠', 'crafter-create')
     await game.service.executeAction(actor('crafter'), 'collect', 'crafter-collect-1')
     await game.service.executeAction(actor('crafter'), 'collect', 'crafter-collect-2')
@@ -162,7 +173,7 @@ describe('DriftService with SQLite', () => {
     await service.createCharacter(actor('numeric'), '数字玩家', 'numeric-create')
     expect(await service.resolveChoiceByIndex(actor('numeric'), 1, 'numeric-without-choice')).toBeNull()
     await service.executeAction(actor('numeric'), 'explore', 'numeric-explore')
-    expect(await service.resolveChoiceByIndex(actor('numeric'), 3, 'numeric-invalid')).toMatchObject({
+    expect(await service.resolveChoiceByIndex(actor('numeric'), 4, 'numeric-invalid')).toMatchObject({
       ok: false,
       code: 'invalid-choice',
     })
@@ -170,6 +181,140 @@ describe('DriftService with SQLite', () => {
       ok: true,
       code: 'event-resolved',
     })
+  })
+
+  it('filters the night event at Asia/Shanghai time boundaries', async () => {
+    const game = await createService(':memory:', 5 * 60 * 1000, 0.65)
+    const cases = [
+      ['before-night', '2026-07-30T11:59:00.000Z', false],
+      ['night-start', '2026-07-30T12:00:00.000Z', true],
+      ['before-dawn', '2026-07-30T21:59:00.000Z', true],
+      ['night-end', '2026-07-30T22:00:00.000Z', false],
+    ] as const
+
+    for (const [userId, now, expectedNight] of cases) {
+      game.setNow(now)
+      await game.service.createCharacter(actor(userId), userId, `${userId}-create`)
+      await game.service.executeAction(actor(userId), 'explore', `${userId}-explore`)
+      const characterId = await activeCharacterId(game.ctx, userId)
+      const [pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+      expect(pending.sourceId === 'forest-night-glow', userId).toBe(expectedNight)
+    }
+  })
+
+  it('tracks occurrence variants, cooldowns, and maximum occurrences', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('progress'), '进度玩家', 'progress-create')
+    const characterId = await activeCharacterId(game.ctx, 'progress')
+
+    await game.service.executeAction(actor('progress'), 'explore', 'progress-explore-1')
+    let [pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending).toMatchObject({ sourceId: 'forest-trapped-animal', variantId: 'first' })
+    await game.service.resolveChoice(actor('progress'), 'leave', 'progress-leave-1')
+
+    await game.service.executeAction(actor('progress'), 'explore', 'progress-cooldown-check')
+    ;[pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending.sourceId).toBe('forest-strange-fungi')
+    await game.service.resolveChoice(actor('progress'), 'leave', 'progress-fungus-leave')
+
+    await game.ctx.database.set('drift_character_event', { characterId, eventId: 'forest-trapped-animal' }, { cooldownUntil: null })
+    await game.service.executeAction(actor('progress'), 'explore', 'progress-explore-2')
+    ;[pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending).toMatchObject({ sourceId: 'forest-trapped-animal', variantId: 'second' })
+    await game.service.resolveChoice(actor('progress'), 'leave', 'progress-leave-2')
+
+    await game.ctx.database.set('drift_character_event', { characterId, eventId: 'forest-trapped-animal' }, { cooldownUntil: null })
+    await game.ctx.database.set('drift_character', { id: characterId }, { actionPoints: 1 })
+    await game.service.executeAction(actor('progress'), 'explore', 'progress-explore-3')
+    ;[pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending).toMatchObject({ sourceId: 'forest-trapped-animal', variantId: 'third' })
+    await game.service.resolveChoice(actor('progress'), 'leave', 'progress-leave-3')
+
+    const [progress] = await game.ctx.database.get('drift_character_event', {
+      characterId,
+      eventId: 'forest-trapped-animal',
+    })
+    expect(progress).toMatchObject({ occurrenceCount: 3, lastChoiceId: 'leave' })
+    expect(progress.choiceCounts.leave).toBe(3)
+
+    await game.ctx.database.set('drift_character', { id: characterId }, { actionPoints: 1 })
+    await game.service.executeAction(actor('progress'), 'explore', 'progress-after-max')
+    ;[pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending.sourceId).not.toBe('forest-trapped-animal')
+  })
+
+  it('uses event private state when selecting a variant', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('state-read'), '状态读取者', 'state-read-create')
+    const characterId = await activeCharacterId(game.ctx, 'state-read')
+    await game.ctx.database.create('drift_character_event', {
+      characterId,
+      eventId: 'forest-trapped-animal',
+      occurrenceCount: 0,
+      lastTriggeredAt: null,
+      cooldownUntil: null,
+      lastChoiceId: null,
+      choiceCounts: {},
+      state: { seen: true },
+      createdAt: new Date('2026-07-30T04:00:00.000Z'),
+      updatedAt: new Date('2026-07-30T04:00:00.000Z'),
+    })
+    const content = (game.service as unknown as { content: ContentStore }).content
+    content.event('forest-trapped-animal').variants[0].conditions = [{
+      type: 'eventState',
+      key: 'seen',
+      operator: 'eq',
+      value: true,
+    }]
+    await game.service.executeAction(actor('state-read'), 'explore', 'state-read-explore')
+    const [pending] = await game.ctx.database.get('drift_pending_choice', { characterId })
+    expect(pending.variantId).toBe('first')
+  })
+
+  it('shows unavailable choices and uses a crafted tool without consuming it', async () => {
+    const blocked = await createService(':memory:', 5 * 60 * 1000, 0.65)
+    await blocked.service.createCharacter(actor('blocked-tool'), '徒手者', 'blocked-create')
+    await blocked.service.executeAction(actor('blocked-tool'), 'explore', 'blocked-explore')
+    const blockedActions = await blocked.service.listActions(actor('blocked-tool'))
+    expect(blockedActions.find(action => action.actionId === 'choice:cut-trunk')).toMatchObject({
+      enabled: false,
+      disabledReason: '需要能够切割木材的工具',
+    })
+    expect(await blocked.service.resolveChoice(actor('blocked-tool'), 'cut-trunk', 'blocked-cut')).toMatchObject({
+      ok: false,
+      code: 'requirements-not-met',
+    })
+    expect((await blocked.service.getStatus(actor('blocked-tool'))).pendingTitle).toBe('倒下的巨树')
+
+    const game = await createService()
+    await game.service.createCharacter(actor('tool'), '工具玩家', 'tool-create')
+    await game.service.executeAction(actor('tool'), 'collect', 'tool-wood-1')
+    await game.service.executeAction(actor('tool'), 'collect', 'tool-wood-2')
+    game.setRandom(0.999)
+    await game.service.executeAction(actor('tool'), 'collect', 'tool-stone')
+    game.setNow('2026-07-31T04:00:00.000Z')
+    expect(game.service.findCraftableItem('石斧')).toBe('stone-axe')
+    await game.service.executeAction(actor('tool'), 'craft:stone-axe', 'tool-craft')
+    game.setRandom(0.65)
+    await game.service.executeAction(actor('tool'), 'explore', 'tool-explore')
+    const options = await game.service.listActions(actor('tool'))
+    expect(options.find(action => action.actionId === 'choice:cut-trunk')?.enabled).toBe(true)
+    await game.ctx.database.remove('drift_inventory', { characterId: await activeCharacterId(game.ctx, 'tool'), itemId: 'stone-axe' })
+    expect(await game.service.resolveChoice(actor('tool'), 'cut-trunk', 'tool-cut-missing')).toMatchObject({
+      ok: false,
+      code: 'requirements-not-met',
+    })
+    await game.ctx.database.create('drift_inventory', {
+      characterId: await activeCharacterId(game.ctx, 'tool'),
+      itemId: 'stone-axe',
+      quantity: 1,
+      updatedAt: new Date('2026-07-31T04:00:00.000Z'),
+    })
+    await game.service.resolveChoice(actor('tool'), 'cut-trunk', 'tool-cut')
+    expect((await game.service.getInventory(actor('tool'))).items).toEqual(expect.arrayContaining([
+      { itemId: 'stone-axe', name: '石斧', quantity: 1 },
+      { itemId: 'wood', name: '木材', quantity: 6 },
+    ]))
   })
 
   it('expires new and legacy pending choices after the configured timeout', async () => {
@@ -184,19 +329,159 @@ describe('DriftService with SQLite', () => {
       platformUserId: 'timeout',
     })
     const [user] = await game.ctx.database.get('drift_user', { id: identity.userId })
-    await game.ctx.database.set('drift_pending_choice', { characterId: user.activeCharacterId! }, { expiresAt: null })
+    const [pending] = await game.ctx.database.get('drift_pending_choice', { characterId: user.activeCharacterId! })
+    const legacyOptions = pending.options.map(option => ({ id: option.id, label: option.label, outcome: option.outcome }))
+    await game.ctx.database.set('drift_pending_choice', { characterId: user.activeCharacterId! }, {
+      defaultOptionId: null,
+      variantId: null,
+      options: legacyOptions,
+      expiresAt: null,
+    })
     game.setNow('2026-07-30T04:03:01.000Z')
 
-    expect(await game.service.resolveChoiceByIndex(actor('timeout'), 1, 'timeout-choice')).toMatchObject({
-      ok: false,
-      code: 'choice-expired',
+    const resolved = await game.service.settleExpiredChoice(actor('timeout'), 'timeout-choice')
+    expect(resolved).toMatchObject({
+      ok: true,
+      code: 'choice-timeout',
     })
+    expect(resolved?.message).toContain('自动选择“安全离开”')
+    expect(await game.service.settleExpiredChoice(actor('timeout'), 'timeout-choice')).toEqual(resolved)
     expect((await game.service.getStatus(actor('timeout'))).pendingTitle).toBeUndefined()
     expect(await game.service.resolveChoiceByIndex(actor('timeout'), 1, 'timeout-no-choice')).toBeNull()
   })
 
-  it('records combat death without granting rewards', async () => {
+  it('applies event effects atomically, records private state, and supports event death', async () => {
     const { ctx, service } = await createService()
+    await service.createCharacter(actor('effects'), '效果玩家', 'effects-create')
+    const characterId = await activeCharacterId(ctx, 'effects')
+    const now = new Date('2026-07-30T04:00:00.000Z')
+    await ctx.database.create('drift_pending_choice', {
+      characterId,
+      kind: 'event',
+      sourceId: 'forest-trapped-animal',
+      sourceVersion: 1,
+      variantId: 'test',
+      defaultOptionId: 'leave',
+      options: [
+        {
+          id: 'costly',
+          label: '支付两份口粮',
+          enabled: true,
+          default: false,
+          outcome: {
+            type: 'effects',
+            effects: [
+              { type: 'gainItem', itemId: 'wood', quantity: 5 },
+              { type: 'consumeItem', itemId: 'ration', quantity: 2 },
+            ],
+            message: '交换成功。',
+          },
+        },
+        { id: 'leave', label: '离开', enabled: true, default: true, outcome: { type: 'nothing', message: '离开了。' } },
+      ],
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + 300_000),
+    })
+
+    expect(await service.resolveChoice(actor('effects'), 'costly', 'effects-costly')).toMatchObject({
+      ok: false,
+      code: 'requirements-not-met',
+    })
+    expect((await service.getInventory(actor('effects'))).items).toEqual([
+      { itemId: 'ration', name: '口粮', quantity: 1 },
+    ])
+    expect((await service.getStatus(actor('effects'))).pendingTitle).toBeTruthy()
+
+    await ctx.database.set('drift_pending_choice', { characterId }, {
+      defaultOptionId: 'state',
+      options: [{
+        id: 'state',
+        label: '记录状态',
+        enabled: true,
+        default: true,
+        outcome: {
+          type: 'effects',
+          effects: [
+            { type: 'setState', key: 'met', value: true },
+            { type: 'incrementState', key: 'visits', amount: 1 },
+            { type: 'adjustHp', amount: -1 },
+          ],
+          message: '状态已记录。',
+        },
+      }],
+    })
+    await service.resolveChoice(actor('effects'), 'state', 'effects-state')
+    const [progress] = await ctx.database.get('drift_character_event', { characterId, eventId: 'forest-trapped-animal' })
+    expect(progress.state).toEqual({ met: true, visits: 1 })
+    expect(progress.choiceCounts.state).toBe(1)
+    expect((await service.getStatus(actor('effects'))).character?.hp).toBe(2)
+
+    await ctx.database.create('drift_pending_choice', {
+      characterId,
+      kind: 'event',
+      sourceId: 'forest-strange-fungi',
+      sourceVersion: 1,
+      variantId: 'fatal',
+      defaultOptionId: 'fatal',
+      options: [{
+        id: 'fatal',
+        label: '承受伤害',
+        enabled: true,
+        default: true,
+        outcome: {
+          type: 'effects',
+          effects: [{ type: 'adjustHp', amount: -3 }],
+          message: '你受到了致命伤。',
+        },
+      }],
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + 300_000),
+    })
+    expect(await service.resolveChoice(actor('effects'), 'fatal', 'effects-fatal')).toMatchObject({
+      ok: true,
+      code: 'character-died',
+    })
+    expect((await service.getHistory(actor('effects'))).characters[0].deathCause).toBe('event')
+  })
+
+  it('uses the exploration fallback when every event is unavailable', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('fallback'), '保底玩家', 'fallback-create')
+    const characterId = await activeCharacterId(game.ctx, 'fallback')
+    const now = new Date('2026-07-30T04:00:00.000Z')
+    const future = new Date('2099-01-01T00:00:00.000Z')
+    for (const eventId of [
+      'forest-trapped-animal',
+      'forest-strange-fungi',
+      'forest-fallen-tree',
+      'forest-night-glow',
+      'forest-tree-hole-creature',
+      'forest-rustle',
+    ]) {
+      await game.ctx.database.create('drift_character_event', {
+        characterId,
+        eventId,
+        occurrenceCount: eventId === 'forest-trapped-animal' || eventId === 'forest-fallen-tree' || eventId === 'forest-tree-hole-creature' ? 3 : 1,
+        lastTriggeredAt: now,
+        cooldownUntil: future,
+        lastChoiceId: null,
+        choiceCounts: {},
+        state: {},
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+    const result = await game.service.executeAction(actor('fallback'), 'explore', 'fallback-explore')
+    expect(result.message).toContain('只找到 1 份木材')
+    expect((await game.service.getInventory(actor('fallback'))).items).toContainEqual({
+      itemId: 'wood',
+      name: '木材',
+      quantity: 1,
+    })
+  })
+
+  it('records combat death without granting rewards', async () => {
+    const { ctx, service } = await createService(':memory:', 5 * 60 * 1000, 0.999)
     await service.createCharacter(actor('doomed'), '伤员', 'doomed-create')
     await service.executeAction(actor('doomed'), 'explore', 'doomed-explore')
     const [identity] = await ctx.database.get('drift_identity', { platform: 'test', platformUserId: 'doomed' })
@@ -225,7 +510,7 @@ describe('DriftService with SQLite', () => {
     const second = await createService(databasePath)
     const [preserved] = await second.ctx.database.get('drift_content', { type: 'region', contentId: 'forest' })
     expect(preserved.data.name).toBe('自定义森林')
-    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(6)
+    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(15)
   })
 
   it('applies a seed update only when its version increases', async () => {

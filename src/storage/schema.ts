@@ -7,6 +7,7 @@ import type {
   PendingChoiceKind,
   PendingOption,
 } from '../core/types'
+import type { EventStateValue } from '../content/schema'
 
 export interface DriftUser {
   id: number
@@ -70,9 +71,24 @@ export interface DriftPendingChoice {
   kind: PendingChoiceKind
   sourceId: string
   sourceVersion: number
+  variantId: string | null
+  defaultOptionId: string | null
   options: PendingOption[]
   createdAt: Date
   expiresAt: Date | null
+}
+
+export interface DriftCharacterEvent {
+  characterId: number
+  eventId: string
+  occurrenceCount: number
+  lastTriggeredAt: Date | null
+  cooldownUntil: Date | null
+  lastChoiceId: string | null
+  choiceCounts: Record<string, number>
+  state: Record<string, EventStateValue>
+  createdAt: Date
+  updatedAt: Date
 }
 
 export interface DriftActionLog {
@@ -105,6 +121,7 @@ declare module 'koishi' {
     drift_inventory: DriftInventory
     drift_character_building: DriftCharacterBuilding
     drift_pending_choice: DriftPendingChoice
+    drift_character_event: DriftCharacterEvent
     drift_action_log: DriftActionLog
     drift_content: DriftContent
   }
@@ -191,11 +208,29 @@ export function defineModels(ctx: Context) {
     kind: 'string(16)',
     sourceId: 'string(64)',
     sourceVersion: 'unsigned',
+    variantId: { type: 'string', length: 64, nullable: true },
+    defaultOptionId: { type: 'string', length: 64, nullable: true },
     options: 'json',
     createdAt: 'timestamp',
     expiresAt: { type: 'timestamp', nullable: true },
   }, {
     primary: 'characterId',
+  })
+
+  ctx.model.extend('drift_character_event', {
+    characterId: 'unsigned',
+    eventId: 'string(64)',
+    occurrenceCount: { type: 'unsigned', initial: 0 },
+    lastTriggeredAt: { type: 'timestamp', nullable: true },
+    cooldownUntil: { type: 'timestamp', nullable: true },
+    lastChoiceId: { type: 'string', length: 64, nullable: true },
+    choiceCounts: { type: 'json', initial: {} },
+    state: { type: 'json', initial: {} },
+    createdAt: 'timestamp',
+    updatedAt: 'timestamp',
+  }, {
+    primary: ['characterId', 'eventId'],
+    indexes: [['eventId', 'cooldownUntil']],
   })
 
   ctx.model.extend('drift_action_log', {

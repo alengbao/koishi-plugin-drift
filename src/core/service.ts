@@ -1,7 +1,15 @@
 import { $, Context, Service } from 'koishi'
 import { ContentStore } from '../content/store'
 import { seedContent } from '../content/seeds'
-import type { BuildingData, ItemData, RegionData } from '../content/schema'
+import type {
+  BuildingData,
+  EventCondition,
+  EventData,
+  EventEffect,
+  EventVariant,
+  ItemData,
+  RegionData,
+} from '../content/schema'
 import type {
   ActionOption,
   ActorIdentity,
@@ -16,6 +24,7 @@ import type {
 } from './types'
 import type {
   DriftCharacter,
+  DriftCharacterEvent,
   DriftIdentity,
   DriftPendingChoice,
   DriftUser,
@@ -159,7 +168,8 @@ export class DriftService extends Service {
           index: index + 1,
           actionId: `choice:${option.id}`,
           label: option.label,
-          enabled: true,
+          enabled: option.enabled !== false,
+          disabledReason: option.disabledReason,
           apCost: 0,
         }))
       }
@@ -167,18 +177,32 @@ export class DriftService extends Service {
       const inventory = await this.inventoryMap(db, character.id)
       const buildings = await db.get('drift_character_building', { characterId: character.id })
       const region = this.content.region(character.regionId)
-      const ration = this.content.item('ration')
       const shelter = this.content.building('shelter')
-      return [
-        this.option(1, 'collect', '收集木材', region.collect.apCost, character),
-        this.option(2, 'explore', '探索森林', region.explore.apCost, character),
-        this.option(3, 'craft:ration', '制作口粮', ration.recipe!.apCost, character,
-          this.missingCosts(ration.recipe!.ingredients, inventory)),
-        this.option(4, 'build:shelter', '建造庇护所', shelter.apCost, character,
-          buildings.some(row => row.regionId === character.regionId && row.buildingId === 'shelter')
-            ? '已经建造过庇护所'
-            : this.missingCosts(shelter.costs, inventory)),
+      const actions: ActionOption[] = [
+        this.option(1, 'collect', '收集资源', region.collect.apCost, character),
+        this.option(2, 'explore', `探索${region.name}`, region.explore.apCost, character),
       ]
+      for (const [itemId, item] of this.content.craftableItems()) {
+        actions.push(this.option(
+          actions.length + 1,
+          `craft:${itemId}`,
+          `制作${item.name}`,
+          item.recipe!.apCost,
+          character,
+          this.missingCosts(item.recipe!.ingredients, inventory),
+        ))
+      }
+      actions.push(this.option(
+        actions.length + 1,
+        'build:shelter',
+        '建造庇护所',
+        shelter.apCost,
+        character,
+        buildings.some(row => row.regionId === character.regionId && row.buildingId === 'shelter')
+          ? '已经建造过庇护所'
+          : this.missingCosts(shelter.costs, inventory),
+      ))
+      return actions
     })
   }
 
@@ -190,7 +214,11 @@ export class DriftService extends Service {
       const character = await this.activeCharacter(db, user)
       if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
       await this.refreshActionPoints(db, character)
-      if (await this.pendingChoice(db, character.id)) {
+      const pendingState = await this.pendingChoiceState(db, character.id)
+      if (pendingState.expired && pendingState.pending) {
+        return this.settleChoice(db, user, character, pendingState.pending, this.defaultOption(pendingState.pending), requestId, true)
+      }
+      if (pendingState.pending) {
         return this.failure('pending-choice', '请先处理当前选择。')
       }
 
@@ -204,7 +232,7 @@ export class DriftService extends Service {
         return provision.result
       }
 
-      const actionResult = await this.applyAction(db, character, actionId, prepared.region, prepared.item, prepared.building)
+      const actionResult = await this.applyAction(db, user, character, actionId, prepared.region, prepared.item, prepared.building, inventory)
       const result = {
         ...actionResult,
         message: [provision.message, actionResult.message].filter(Boolean).join('\n'),
@@ -222,12 +250,34 @@ export class DriftService extends Service {
       const character = await this.activeCharacter(db, user)
       if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
       const state = await this.pendingChoiceState(db, character.id)
-      if (state.expired) return this.failure('choice-expired', '这个选择已经超时，请重新发起行动。')
+      if (state.expired && state.pending) {
+        return this.settleChoice(db, user, character, state.pending, this.defaultOption(state.pending), requestId, true)
+      }
       const pending = state.pending
       if (!pending) return this.failure('no-pending-choice', '当前没有需要处理的选择。')
       const option = pending.options.find(entry => entry.id === optionId)
       if (!option) return this.failure('invalid-choice', '没有这个选项。')
+      if (option.enabled === false) return this.failure('requirements-not-met', option.disabledReason ?? '这个选项当前不可用。')
       return this.settleChoice(db, user, character, pending, option, requestId)
+    })
+  }
+
+  async settleExpiredChoice(actor: ActorIdentity, requestId: string): Promise<GameResult | null> {
+    return this.transact(async (db) => {
+      const [identity] = await db.get('drift_identity', {
+        platform: actor.platform,
+        platformUserId: actor.platformUserId,
+      })
+      if (!identity) return null
+      const [user] = await db.get('drift_user', { id: identity.userId })
+      if (!user) return null
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return null
+      const state = await this.pendingChoiceState(db, character.id)
+      if (!state.expired || !state.pending) return null
+      return this.settleChoice(db, user, character, state.pending, this.defaultOption(state.pending), requestId, true)
     })
   }
 
@@ -250,15 +300,14 @@ export class DriftService extends Service {
       if (!character) return null
 
       const state = await this.pendingChoiceState(db, character.id)
-      if (state.expired) {
-        const result = this.failure('choice-expired', '这个选择已经超时，请重新发起行动。')
-        await this.log(db, requestId, user.id, character.id, 'choice:expired', { index }, result)
-        return result
+      if (state.expired && state.pending) {
+        return this.settleChoice(db, user, character, state.pending, this.defaultOption(state.pending), requestId, true)
       }
       const pending = state.pending
       if (!pending) return null
       const option = pending.options[index - 1]
       if (!option) return this.failure('invalid-choice', '没有这个选项，请直接发送列表中的数字。')
+      if (option.enabled === false) return this.failure('requirements-not-met', option.disabledReason ?? '这个选项当前不可用。')
       return this.settleChoice(db, user, character, pending, option, requestId)
     })
   }
@@ -320,6 +369,15 @@ export class DriftService extends Service {
     })
   }
 
+  findCraftableItem(query?: string) {
+    if (!query?.trim()) return this.content.item('ration') ? 'ration' : undefined
+    return this.content.findCraftableItem(query)?.[0]
+  }
+
+  craftableItems() {
+    return this.content.craftableItems()
+  }
+
   async requestSuicide(actor: ActorIdentity, requestId: string): Promise<GameResult> {
     return this.transact(async (db) => {
       const user = await this.resolveUser(db, actor)
@@ -327,8 +385,12 @@ export class DriftService extends Service {
       if (repeated) return repeated
       const character = await this.activeCharacter(db, user)
       if (!character) return this.failure('no-active-character', '你还没有存活角色。')
-      const pending = await this.pendingChoice(db, character.id)
-      if (pending) {
+      const pendingState = await this.pendingChoiceState(db, character.id)
+      if (pendingState.expired && pendingState.pending) {
+        return this.settleChoice(db, user, character, pendingState.pending, this.defaultOption(pendingState.pending), requestId, true)
+      }
+      if (pendingState.pending) {
+        const pending = pendingState.pending
         if (pending.kind === 'suicide') {
           return this.success('suicide-pending', `这个决定仍在等待确认。请在 ${this.choiceTimeoutLabel()}内直接发送 1 确认，或发送 2 取消。`)
         }
@@ -337,14 +399,16 @@ export class DriftService extends Service {
 
       const now = this.now()
       const options: PendingOption[] = [
-        { id: 'confirm', label: '确认自尽', outcome: { type: 'suicideConfirm' } },
-        { id: 'cancel', label: '取消', outcome: { type: 'cancel' } },
+        { id: 'confirm', label: '确认自尽', outcome: { type: 'suicideConfirm' }, enabled: true, default: false },
+        { id: 'cancel', label: '取消', outcome: { type: 'cancel' }, enabled: true, default: true },
       ]
       await db.create('drift_pending_choice', {
         characterId: character.id,
         kind: 'suicide',
         sourceId: 'suicide',
         sourceVersion: 1,
+        variantId: null,
+        defaultOptionId: 'cancel',
         options,
         createdAt: now,
         expiresAt: new Date(now.getTime() + this.choiceTimeout),
@@ -367,7 +431,7 @@ export class DriftService extends Service {
     inventory: Map<string, number>,
   ): Promise<
     | { ok: false, result: GameResult }
-    | { ok: true, region: RegionData, item?: ItemData, building?: BuildingData }
+    | { ok: true, region: RegionData, item?: ItemData, itemId?: string, building?: BuildingData }
   > {
     const region = this.content.region(character.regionId)
     let cost: number
@@ -375,14 +439,19 @@ export class DriftService extends Service {
     let building: BuildingData | undefined
     let unavailable: string | undefined
 
-    switch (actionId) {
+    if (actionId.startsWith('craft:')) {
+      const itemId = actionId.slice('craft:'.length)
+      try {
+        item = this.content.item(itemId)
+      } catch {
+        return { ok: false, result: this.failure('invalid-action', '没有这个制作配方。') }
+      }
+      if (!item.recipe) return { ok: false, result: this.failure('invalid-action', '这个物品不能制作。') }
+      cost = item.recipe.apCost
+      unavailable = this.missingCosts(item.recipe.ingredients, inventory)
+    } else switch (actionId) {
       case 'collect': cost = region.collect.apCost; break
       case 'explore': cost = region.explore.apCost; break
-      case 'craft:ration':
-        item = this.content.item('ration')
-        cost = item.recipe!.apCost
-        unavailable = this.missingCosts(item.recipe!.ingredients, inventory)
-        break
       case 'build:shelter': {
         building = this.content.building('shelter')
         cost = building.apCost
@@ -406,11 +475,13 @@ export class DriftService extends Service {
 
   private async applyAction(
     db: DriftDatabase,
+    user: DriftUser,
     character: DriftCharacter,
     actionId: string,
     region: RegionData,
     item?: ItemData,
     building?: BuildingData,
+    inventory?: Map<string, number>,
   ): Promise<GameResult> {
     let cost = 0
     let message = ''
@@ -421,29 +492,52 @@ export class DriftService extends Service {
       message = `你收集到了 ${drop.quantity} 份${this.content.item(drop.itemId).name}。`
     } else if (actionId === 'explore') {
       cost = region.explore.apCost
-      const entry = this.pickWeighted(region.explore.eventPool)
-      const event = this.content.event(entry.eventId)
       const now = this.now()
-      await db.create('drift_pending_choice', {
-        characterId: character.id,
-        kind: 'event',
-        sourceId: entry.eventId,
-        sourceVersion: this.content.version('event', entry.eventId),
-        options: event.choices,
-        createdAt: now,
-        expiresAt: new Date(now.getTime() + this.choiceTimeout),
-      })
-      message = [
-        `${event.name}：${event.description}`,
-        ...event.choices.map((choice, index) => `${index + 1}. ${choice.label}`),
-        `请在 ${this.choiceTimeoutLabel()}内直接发送数字选择。`,
-      ].join('\n')
-    } else if (actionId === 'craft:ration') {
+      const entries = await this.eligibleEventEntries(db, character, region, inventory ?? new Map())
+      if (!entries.length) {
+        await this.adjustInventory(db, character.id, 'wood', 1)
+        message = '你探索了一圈，只找到 1 份木材。'
+      } else {
+        const entry = this.pickWeighted(entries)
+        const event = this.content.event(entry.eventId)
+        const progress = await this.triggerEvent(db, character, entry.eventId, event, now)
+        const variant = this.pickVariant(event, character, inventory ?? new Map(), progress)
+        const choices = variant.choices.map(choice => {
+          const enabled = this.conditionsSatisfied(choice.conditions, character, inventory ?? new Map(), progress)
+          return {
+            ...choice,
+            enabled,
+            disabledReason: enabled ? undefined : choice.disabledReason ?? this.conditionReason(choice.conditions),
+          }
+        })
+        const defaultOption = choices.find(choice => choice.default)!
+        await db.create('drift_pending_choice', {
+          characterId: character.id,
+          kind: 'event',
+          sourceId: entry.eventId,
+          sourceVersion: this.content.version('event', entry.eventId),
+          variantId: variant.id,
+          defaultOptionId: defaultOption.id,
+          options: choices,
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + this.choiceTimeout),
+        })
+        const title = variant.name ? `${event.name}·${variant.name}` : event.name
+        message = [
+          `${title}：${variant.description}`,
+          ...choices.map((choice, index) => {
+            const disabled = choice.enabled ? '' : `（不可用：${choice.disabledReason}）`
+            return `${index + 1}. ${choice.label}${disabled}`
+          }),
+          `请在 ${this.choiceTimeoutLabel()}内直接发送数字选择。`,
+        ].join('\n')
+      }
+    } else if (actionId.startsWith('craft:')) {
       cost = item!.recipe!.apCost
       for (const ingredient of item!.recipe!.ingredients) {
         await this.adjustInventory(db, character.id, ingredient.itemId, -ingredient.quantity)
       }
-      await this.adjustInventory(db, character.id, 'ration', item!.recipe!.outputQuantity)
+      await this.adjustInventory(db, character.id, actionId.slice('craft:'.length), item!.recipe!.outputQuantity)
       message = `你制作了 ${item!.recipe!.outputQuantity} 份${item!.name}。`
     } else if (actionId === 'build:shelter') {
       cost = building!.apCost
@@ -564,7 +658,18 @@ export class DriftService extends Service {
     pending: DriftPendingChoice,
     option: PendingOption,
     requestId: string,
+    timeout = false,
   ): Promise<GameResult> {
+    if (pending.kind === 'event' && option.conditions?.length) {
+      const inventory = await this.inventoryMap(db, character.id)
+      const [progress] = await db.get('drift_character_event', {
+        characterId: character.id,
+        eventId: pending.sourceId,
+      })
+      if (!this.conditionsSatisfied(option.conditions, character, inventory, progress)) {
+        return this.failure('requirements-not-met', option.disabledReason ?? this.conditionReason(option.conditions))
+      }
+    }
     let result: GameResult
     switch (option.outcome.type) {
       case 'cancel':
@@ -581,13 +686,306 @@ export class DriftService extends Service {
         await this.adjustInventory(db, character.id, option.outcome.itemId, option.outcome.quantity)
         result = this.success('event-resolved', option.outcome.message)
         break
+      case 'effects':
+        result = await this.applyEventEffects(db, user, character, pending, option.outcome.effects, option.outcome.message)
+        if (!result.ok) return result
+        break
       case 'combat':
         result = await this.resolveCombat(db, user, character, option.outcome.enemyId)
         break
     }
+    if (pending.kind === 'event') {
+      await this.recordEventChoice(db, character, pending.sourceId, option.id)
+    }
     await db.remove('drift_pending_choice', { characterId: character.id })
+    if (timeout) {
+      result = this.success('choice-timeout', `选择已超时，自动选择“${option.label}”。${result.message ? `\n${result.message}` : ''}`, result.snapshot)
+    }
     await this.log(db, requestId, user.id, character.id, `choice:${option.id}`, { sourceId: pending.sourceId }, result)
     return result
+  }
+
+  private async applyEventEffects(
+    db: DriftDatabase,
+    user: DriftUser,
+    character: DriftCharacter,
+    pending: DriftPendingChoice,
+    effects: EventEffect[],
+    message: string,
+  ): Promise<GameResult> {
+    const inventory = await this.inventoryMap(db, character.id)
+    const consumed = new Map<string, number>()
+    for (const effect of effects) {
+      if (effect.type !== 'consumeItem') continue
+      consumed.set(effect.itemId, (consumed.get(effect.itemId) ?? 0) + effect.quantity)
+    }
+    for (const [itemId, quantity] of consumed) {
+      if ((inventory.get(itemId) ?? 0) < quantity) {
+        return this.failure('requirements-not-met', `缺少${quantity} 份${this.content.item(itemId).name}`)
+      }
+    }
+
+    const progress = await this.getOrCreateEventProgress(db, character, pending.sourceId)
+    const nextState = { ...progress.state }
+    for (const effect of effects) {
+      if (effect.type === 'setState') {
+        nextState[effect.key] = effect.value
+      } else if (effect.type === 'incrementState') {
+        const current = nextState[effect.key]
+        if (current !== undefined && typeof current !== 'number') {
+          return this.failure('invalid-event-state', `事件状态 ${effect.key} 不是数字。`)
+        }
+        nextState[effect.key] = (typeof current === 'number' ? current : 0) + effect.amount
+      }
+    }
+    let hpChanged = false
+    for (const effect of effects) {
+      if (effect.type === 'gainItem') {
+        await this.adjustInventory(db, character.id, effect.itemId, effect.quantity)
+      } else if (effect.type === 'consumeItem') {
+        await this.adjustInventory(db, character.id, effect.itemId, -effect.quantity)
+      } else if (effect.type === 'adjustHp') {
+        character.hp = Math.max(0, Math.min(character.maxHp, character.hp + effect.amount))
+        hpChanged = true
+      }
+    }
+    progress.state = nextState
+    progress.updatedAt = this.now()
+    await db.set('drift_character_event', {
+      characterId: character.id,
+      eventId: pending.sourceId,
+    }, { state: progress.state, updatedAt: progress.updatedAt })
+
+    if (character.hp <= 0) {
+      await this.markDead(db, user, character, 'event', '在探索事件中因伤势死去')
+      return this.success('character-died', `“${character.name}”在探索事件中因伤势死去。`)
+    }
+    if (hpChanged) {
+      character.revision += 1
+      character.updatedAt = this.now()
+      await db.set('drift_character', { id: character.id }, {
+        hp: character.hp,
+        revision: character.revision,
+        updatedAt: character.updatedAt,
+      })
+    }
+    return this.success('event-resolved', message, { character: this.characterSnapshot(character) })
+  }
+
+  private async recordEventChoice(db: DriftDatabase, character: DriftCharacter, eventId: string, choiceId: string) {
+    const progress = await this.getOrCreateEventProgress(db, character, eventId)
+    progress.lastChoiceId = choiceId
+    progress.choiceCounts[choiceId] = (progress.choiceCounts[choiceId] ?? 0) + 1
+    progress.updatedAt = this.now()
+    await db.set('drift_character_event', { characterId: character.id, eventId }, {
+      lastChoiceId: progress.lastChoiceId,
+      choiceCounts: progress.choiceCounts,
+      updatedAt: progress.updatedAt,
+    })
+  }
+
+  private async eligibleEventEntries(
+    db: DriftDatabase,
+    character: DriftCharacter,
+    region: RegionData,
+    inventory: Map<string, number>,
+  ) {
+    const now = this.now().getTime()
+    const result: Array<{ eventId: string, weight: number }> = []
+    for (const entry of region.explore.eventPool) {
+      const event = this.content.event(entry.eventId)
+      const [progress] = await db.get('drift_character_event', {
+        characterId: character.id,
+        eventId: entry.eventId,
+      })
+      if (event.maxOccurrences !== undefined && (progress?.occurrenceCount ?? 0) >= event.maxOccurrences) continue
+      if (progress?.cooldownUntil && progress.cooldownUntil.getTime() > now) continue
+      if (!this.conditionsSatisfied(event.conditions, character, inventory, progress)) continue
+      result.push(entry)
+    }
+    return result
+  }
+
+  private async triggerEvent(
+    db: DriftDatabase,
+    character: DriftCharacter,
+    eventId: string,
+    event: EventData,
+    now: Date,
+  ): Promise<DriftCharacterEvent> {
+    const [existing] = await db.get('drift_character_event', {
+      characterId: character.id,
+      eventId,
+    })
+    const occurrenceCount = (existing?.occurrenceCount ?? 0) + 1
+    const cooldownUntil = event.cooldownMs ? new Date(now.getTime() + event.cooldownMs) : null
+    if (existing) {
+      await db.set('drift_character_event', {
+        characterId: character.id,
+        eventId,
+      }, {
+        occurrenceCount,
+        lastTriggeredAt: now,
+        cooldownUntil,
+        updatedAt: now,
+      })
+      return {
+        ...existing,
+        occurrenceCount,
+        lastTriggeredAt: now,
+        cooldownUntil,
+        updatedAt: now,
+      }
+    }
+    return db.create('drift_character_event', {
+      characterId: character.id,
+      eventId,
+      occurrenceCount,
+      lastTriggeredAt: now,
+      cooldownUntil,
+      lastChoiceId: null,
+      choiceCounts: {},
+      state: {},
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  private pickVariant(
+    event: EventData,
+    character: DriftCharacter,
+    inventory: Map<string, number>,
+    progress: DriftCharacterEvent,
+  ): EventVariant {
+    const variants = event.variants.filter(variant => (
+      this.occurrenceMatches(variant, progress.occurrenceCount)
+      && this.conditionsSatisfied(variant.conditions, character, inventory, progress)
+    ))
+    if (variants.length) return this.pickWeighted(variants)
+    return event.variants.find(variant => variant.id === event.fallbackVariantId)!
+  }
+
+  private occurrenceMatches(variant: EventVariant, occurrence: number) {
+    if (!variant.occurrence) return true
+    if (occurrence < variant.occurrence.min) return false
+    return variant.occurrence.max === undefined || occurrence <= variant.occurrence.max
+  }
+
+  private conditionsSatisfied(
+    conditions: EventCondition[],
+    character: DriftCharacter,
+    inventory: Map<string, number>,
+    progress?: DriftCharacterEvent,
+  ) {
+    return conditions.every(condition => {
+      switch (condition.type) {
+        case 'localTime':
+          return this.inLocalTimeRange(condition.start, condition.end)
+        case 'inventory':
+          return (inventory.get(condition.itemId) ?? 0) >= condition.quantity
+        case 'capability':
+          return this.content.itemEntries().some(([itemId, item]) => (
+            (inventory.get(itemId) ?? 0) > 0 && item.capabilities.includes(condition.capability)
+          ))
+        case 'hp':
+          return this.compare(character.hp, condition.operator, condition.value)
+        case 'eventState': {
+          const value = progress?.state[condition.key]
+          return value !== undefined && this.compareState(value, condition.operator, condition.value)
+        }
+      }
+    })
+  }
+
+  private compare(actual: number, operator: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte', expected: number) {
+    switch (operator) {
+      case 'eq': return actual === expected
+      case 'ne': return actual !== expected
+      case 'gt': return actual > expected
+      case 'gte': return actual >= expected
+      case 'lt': return actual < expected
+      case 'lte': return actual <= expected
+    }
+  }
+
+  private compareState(actual: boolean | number | string, operator: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte', expected: boolean | number | string) {
+    if (typeof actual !== typeof expected) return operator === 'ne'
+    switch (operator) {
+      case 'eq': return actual === expected
+      case 'ne': return actual !== expected
+      case 'gt': return actual > expected
+      case 'gte': return actual >= expected
+      case 'lt': return actual < expected
+      case 'lte': return actual <= expected
+    }
+  }
+
+  private conditionReason(conditions: EventCondition[]) {
+    return conditions.map(condition => {
+      switch (condition.type) {
+        case 'localTime': return `需要在 ${condition.start}-${condition.end}`
+        case 'inventory': return `需要 ${condition.quantity} 份${this.content.item(condition.itemId).name}`
+        case 'capability': return `需要具备 ${condition.capability} 能力的工具`
+        case 'hp': return `生命值不满足 ${condition.operator} ${condition.value}`
+        case 'eventState': return `事件状态 ${condition.key} 不满足条件`
+      }
+    }).join('；')
+  }
+
+  private inLocalTimeRange(start: string, end: string) {
+    const current = this.localTimeMinutes(this.now())
+    const startMinutes = this.parseTime(start)
+    const endMinutes = this.parseTime(end)
+    return startMinutes <= endMinutes
+      ? current >= startMinutes && current < endMinutes
+      : current >= startMinutes || current < endMinutes
+  }
+
+  private localTimeMinutes(date: Date) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date)
+    const value = Object.fromEntries(parts.map(part => [part.type, part.value]))
+    return Number(value.hour) * 60 + Number(value.minute)
+  }
+
+  private parseTime(value: string) {
+    const [hour, minute] = value.split(':').map(Number)
+    return hour * 60 + minute
+  }
+
+  private async getOrCreateEventProgress(db: DriftDatabase, character: DriftCharacter, eventId: string) {
+    const [existing] = await db.get('drift_character_event', { characterId: character.id, eventId })
+    if (existing) {
+      existing.choiceCounts ??= {}
+      existing.state ??= {}
+      return existing
+    }
+    const now = this.now()
+    return db.create('drift_character_event', {
+      characterId: character.id,
+      eventId,
+      occurrenceCount: 0,
+      lastTriggeredAt: null,
+      cooldownUntil: null,
+      lastChoiceId: null,
+      choiceCounts: {},
+      state: {},
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  private defaultOption(pending: DriftPendingChoice) {
+    const option = pending.options.find(option => option.id === pending.defaultOptionId)
+      ?? pending.options.find(option => option.default)
+      ?? pending.options.find(option => pending.kind === 'suicide' ? option.id === 'cancel' : option.id === 'leave')
+      ?? pending.options[pending.options.length - 1]
+    if (!option) throw new Error(`角色 ${pending.characterId} 的待选事件没有可结算选项`)
+    return option
   }
 
   private async markDead(
@@ -678,7 +1076,8 @@ export class DriftService extends Service {
   }
 
   private async pendingChoice(db: DriftDatabase, characterId: number): Promise<DriftPendingChoice | undefined> {
-    return (await this.pendingChoiceState(db, characterId)).pending
+    const state = await this.pendingChoiceState(db, characterId)
+    return state.expired ? undefined : state.pending
   }
 
   private async pendingChoiceState(
@@ -690,8 +1089,7 @@ export class DriftService extends Service {
     if (this.choiceExpiresAt(pending).getTime() > this.now().getTime()) {
       return { pending, expired: false }
     }
-    await db.remove('drift_pending_choice', { characterId })
-    return { expired: true }
+    return { pending, expired: true }
   }
 
   private async inventoryMap(db: DriftDatabase, characterId: number) {
