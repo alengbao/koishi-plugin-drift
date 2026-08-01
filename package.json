@@ -1,8 +1,21 @@
 {
   "name": "koishi-plugin-drift",
   "version": "0.1.0",
-  "private": true,
   "description": "A small persistent survival game for Koishi.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alengbao/koishi-plugin-drift.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alengbao/koishi-plugin-drift/issues"
+  },
+  "keywords": [
+    "koishi",
+    "koishi-plugin",
+    "game",
+    "survival",
+    "drift"
+  ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
