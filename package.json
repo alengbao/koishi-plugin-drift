@@ -4,7 +4,7 @@
   "description": "A small persistent survival game for Koishi.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alengbao/koishi-plugin-drift.git"
+    "url": "git+https://github.com/alengbao/koishi-plugin-drift.git"
   },
   "bugs": {
     "url": "https://github.com/alengbao/koishi-plugin-drift/issues"
