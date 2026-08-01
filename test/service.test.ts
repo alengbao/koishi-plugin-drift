@@ -71,13 +71,17 @@ describe('DriftService with SQLite', () => {
     const { service } = await createService()
     const created = await service.createCharacter(actor('one'), undefined, 'create-one')
     expect(created.message).toContain('“流浪者”')
+    expect(created.message).toContain('3 份口粮')
 
     const first = await service.executeAction(actor('one'), 'collect', 'collect-one')
     const repeated = await service.executeAction(actor('one'), 'collect', 'collect-one')
     expect(repeated).toEqual(first)
 
     const inventory = await service.getInventory(actor('one'))
-    expect(inventory.items).toEqual([{ itemId: 'wood', name: '木材', quantity: 1 }])
+    expect(inventory.items).toEqual([
+      { itemId: 'ration', name: '口粮', quantity: 2 },
+      { itemId: 'wood', name: '木材', quantity: 1 },
+    ])
     expect((await service.getStatus(actor('one'))).character?.actionPoints).toBe(2)
     expect(await service.createCharacter(actor('one'), '另一个角色', 'create-two')).toMatchObject({
       ok: false,
@@ -97,12 +101,12 @@ describe('DriftService with SQLite', () => {
       code: 'requirements-not-met',
     })
     expect((await service.getStatus(actor('invalid'))).character).toMatchObject({
-      hp: 3,
+      hp: 5,
       actionPoints: 3,
       hungerDays: 0,
     })
     expect((await service.getInventory(actor('invalid'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 1 },
+      { itemId: 'ration', name: '口粮', quantity: 3 },
     ])
   })
 
@@ -125,7 +129,7 @@ describe('DriftService with SQLite', () => {
     expect(choices.map(choice => choice.actionId)).toEqual(['choice:investigate', 'choice:leave'])
     const combat = await game.service.resolveChoice(actor('fighter'), 'investigate', 'fighter-fight')
     expect(combat.code).toBe('combat-won')
-    expect((await game.service.getStatus(actor('fighter'))).character?.hp).toBe(2)
+    expect((await game.service.getStatus(actor('fighter'))).character?.hp).toBe(4)
 
     game.setRandom(0)
     await game.service.createCharacter(actor('crafter'), '工匠', 'crafter-create')
@@ -134,7 +138,7 @@ describe('DriftService with SQLite', () => {
     const crafted = await game.service.executeAction(actor('crafter'), 'craft:ration', 'crafter-craft')
     expect(crafted.message).toContain('制作了 1 份口粮')
     expect((await game.service.getInventory(actor('crafter'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 1 },
+      { itemId: 'ration', name: '口粮', quantity: 3 },
     ])
   })
 
@@ -145,13 +149,22 @@ describe('DriftService with SQLite', () => {
 
     game.setNow('2026-07-31T04:00:00.000Z')
     expect((await game.service.getStatus(actor('hungry'))).character?.actionPoints).toBe(3)
-    expect((await game.service.getStatus(actor('hungry'))).character?.hp).toBe(3)
+    expect((await game.service.getStatus(actor('hungry'))).character?.hp).toBe(5)
     await game.service.executeAction(actor('hungry'), 'collect', 'hungry-day-2')
 
     game.setNow('2026-08-01T04:00:00.000Z')
     await game.service.executeAction(actor('hungry'), 'collect', 'hungry-day-3')
-    game.setNow('2026-08-02T04:00:00.000Z')
-    const died = await game.service.executeAction(actor('hungry'), 'collect', 'hungry-day-4')
+    for (const [day, date] of [
+      ['4', '2026-08-02T04:00:00.000Z'],
+      ['5', '2026-08-03T04:00:00.000Z'],
+      ['6', '2026-08-04T04:00:00.000Z'],
+      ['7', '2026-08-05T04:00:00.000Z'],
+    ]) {
+      game.setNow(date)
+      await game.service.executeAction(actor('hungry'), 'collect', `hungry-day-${day}`)
+    }
+    game.setNow('2026-08-06T04:00:00.000Z')
+    const died = await game.service.executeAction(actor('hungry'), 'collect', 'hungry-day-8')
     expect(died.code).toBe('character-died')
     expect((await game.service.getStatus(actor('hungry'))).character).toBeNull()
     expect((await game.service.getHistory(actor('hungry'))).characters[0].deathCause).toBe('hunger')
@@ -382,7 +395,7 @@ describe('DriftService with SQLite', () => {
             type: 'effects',
             effects: [
               { type: 'gainItem', itemId: 'wood', quantity: 5 },
-              { type: 'consumeItem', itemId: 'ration', quantity: 2 },
+              { type: 'consumeItem', itemId: 'ration', quantity: 4 },
             ],
             message: '交换成功。',
           },
@@ -398,7 +411,7 @@ describe('DriftService with SQLite', () => {
       code: 'requirements-not-met',
     })
     expect((await service.getInventory(actor('effects'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 1 },
+      { itemId: 'ration', name: '口粮', quantity: 3 },
     ])
     expect((await service.getStatus(actor('effects'))).pendingTitle).toBeTruthy()
 
@@ -424,7 +437,7 @@ describe('DriftService with SQLite', () => {
     const [progress] = await ctx.database.get('drift_character_event', { characterId, eventId: 'forest-trapped-animal' })
     expect(progress.state).toEqual({ met: true, visits: 1 })
     expect(progress.choiceCounts.state).toBe(1)
-    expect((await service.getStatus(actor('effects'))).character?.hp).toBe(2)
+    expect((await service.getStatus(actor('effects'))).character?.hp).toBe(4)
 
     await ctx.database.create('drift_pending_choice', {
       characterId,
@@ -440,7 +453,7 @@ describe('DriftService with SQLite', () => {
         default: true,
         outcome: {
           type: 'effects',
-          effects: [{ type: 'adjustHp', amount: -3 }],
+          effects: [{ type: 'adjustHp', amount: -5 }],
           message: '你受到了致命伤。',
         },
       }],
@@ -502,7 +515,7 @@ describe('DriftService with SQLite', () => {
     expect(result.code).toBe('character-died')
     expect((await service.getHistory(actor('doomed'))).characters[0].deathCause).toBe('combat')
     const inventory = await ctx.database.get('drift_inventory', { characterId: user.activeCharacterId! })
-    expect(inventory).toHaveLength(0)
+    expect(inventory).toMatchObject([{ itemId: 'ration', quantity: 2 }])
   })
 
   it('does not overwrite existing seed rows on a later startup', async () => {
@@ -574,15 +587,15 @@ describe('DriftService with SQLite', () => {
     expect(repeatedReset).toEqual(firstReset)
     expect((await game.service.getStatus(actor('developer'))).character).toMatchObject({
       id: characterId,
-      hp: 3,
-      maxHp: 3,
+      hp: 5,
+      maxHp: 5,
       actionPoints: 3,
       maxActionPoints: 3,
       regionId: 'forest',
       hungerDays: 0,
     })
     expect((await game.service.getInventory(actor('developer'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 1 },
+      { itemId: 'ration', name: '口粮', quantity: 3 },
     ])
     expect(await game.ctx.database.get('drift_action_log', { characterId })).not.toHaveLength(0)
   })

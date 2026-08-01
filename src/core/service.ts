@@ -43,6 +43,9 @@ import type {
 
 type DriftDatabase = Context['database']
 
+const initialHp = 5
+const initialRations = 3
+
 export interface DriftServiceOptions {
   now?: () => Date
   random?: () => number
@@ -122,8 +125,8 @@ export class DriftService extends Service {
         speciesId: 'human',
         professionId: 'drifter',
         regionId: 'forest',
-        hp: 3,
-        maxHp: 3,
+        hp: initialHp,
+        maxHp: initialHp,
         attack: 1,
         actionPoints: 3,
         maxActionPoints: 3,
@@ -140,7 +143,7 @@ export class DriftService extends Service {
       await db.create('drift_inventory', {
         characterId: character.id,
         itemId: 'ration',
-        quantity: 1,
+        quantity: initialRations,
         updatedAt: now,
       })
       await db.set('drift_user', { id: user.id }, {
@@ -148,7 +151,7 @@ export class DriftService extends Service {
         revision: user.revision + 1,
         updatedAt: now,
       })
-      const result = this.success('character-created', `“${character.name}”醒在森林边缘，背包里只有 1 份口粮。`, {
+      const result = this.success('character-created', `“${character.name}”醒在森林边缘，背包里有 ${initialRations} 份口粮。`, {
         character: this.characterSnapshot(character),
       })
       await this.log(db, requestId, user.id, character.id, 'create', { name: character.name }, result)
@@ -514,8 +517,8 @@ export class DriftService extends Service {
         speciesId: 'human',
         professionId: 'drifter',
         regionId: 'forest',
-        hp: 3,
-        maxHp: 3,
+        hp: initialHp,
+        maxHp: initialHp,
         attack: 1,
         actionPoints: 3,
         maxActionPoints: 3,
@@ -550,7 +553,7 @@ export class DriftService extends Service {
       await db.create('drift_inventory', {
         characterId: character.id,
         itemId: 'ration',
-        quantity: 1,
+        quantity: initialRations,
         updatedAt: now,
       })
       const result = this.success('debug-reset', `“${character.name}”已恢复到初始状态。`, {

@@ -212,13 +212,21 @@ export const contentDefinitionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('event'), contentId: id, data: eventDataSchema }),
 ])
 
-export const contentFileSchema = z.intersection(
-  z.object({
-    $schema: z.string().optional(),
-    version: positiveInteger,
-  }),
-  contentDefinitionSchema,
-)
+// Keep the file metadata in every discriminated branch. An outer intersection
+// makes zod-to-json-schema emit `additionalProperties: false` branches that do
+// not see `$schema` and `version`, causing false editor diagnostics.
+const contentFileMetadata = {
+  $schema: z.string().optional(),
+  version: positiveInteger,
+}
+
+export const contentFileSchema = z.discriminatedUnion('type', [
+  z.object({ ...contentFileMetadata, type: z.literal('region'), contentId: id, data: regionDataSchema }),
+  z.object({ ...contentFileMetadata, type: z.literal('item'), contentId: id, data: itemDataSchema }),
+  z.object({ ...contentFileMetadata, type: z.literal('enemy'), contentId: id, data: enemyDataSchema }),
+  z.object({ ...contentFileMetadata, type: z.literal('building'), contentId: id, data: buildingDataSchema }),
+  z.object({ ...contentFileMetadata, type: z.literal('event'), contentId: id, data: eventDataSchema }),
+])
 
 export type ContentDefinition = z.infer<typeof contentDefinitionSchema>
 export type ContentFileDefinition = z.infer<typeof contentFileSchema>
