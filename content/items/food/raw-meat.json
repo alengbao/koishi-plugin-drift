@@ -1,0 +1,14 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "raw-meat",
+  "version": 1,
+  "data": {
+    "name": "生肉",
+    "description": "未经处理的肉，无法保存太久。",
+    "kind": "food",
+    "capabilities": [],
+    "nutrition": 1,
+    "shelfLifeDays": 3
+  }
+}

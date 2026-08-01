@@ -73,7 +73,7 @@ drift.status
 drift.actions
 drift.collect
 drift.explore
-drift.craft [ration|stone-axe]
+drift.craft [stone-axe]
 drift.build [shelter]
 drift.inventory
 drift.camp
@@ -100,3 +100,19 @@ animals, strange fungi, fallen trees, night-only lights, a tree-hole creature,
 and the original low-weight combat event. Ordinary collection yields wood or
 stone. A stone axe can be crafted from two wood and one stone and unlocks the
 high-yield fallen-tree option without being consumed.
+
+## Food batches
+
+Food is stored separately from ordinary resources as dated lots. Each lot records
+its Asia/Shanghai acquisition date and, for perishable food, the calendar date at
+which it expires. The built-in foods are ration (permanent), fresh fish (2 days),
+raw meat (3 days), wild mushroom (4 days), and wild fruit (6 days). All currently
+provide one nutrition point. Ration no longer has a crafting recipe.
+
+On the first valid action of each local calendar day, one available food is eaten
+automatically. Lots are consumed FEFO: earliest expiry, then earliest acquisition,
+then smallest lot ID; permanent ration is last. Expired lots are removed lazily
+when the inventory is viewed, a valid action runs, or an event choice is settled,
+and the response lists what spoiled. Invalid actions do not alter or clean the
+inventory. Existing ordinary food rows are migrated to lots on startup; migration
+is idempotent and uses the upgrade date as the acquisition date.

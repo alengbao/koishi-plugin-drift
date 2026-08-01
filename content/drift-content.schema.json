@@ -144,77 +144,143 @@
               "$ref": "#/definitions/DriftContent/anyOf/0/properties/contentId"
             },
             "data": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "description": {
-                  "type": "string"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "resource",
-                    "food",
-                    "tool"
-                  ]
-                },
-                "capabilities": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/definitions/DriftContent/anyOf/0/properties/contentId"
-                  },
-                  "default": []
-                },
-                "nutrition": {
-                  "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
-                },
-                "recipe": {
+              "anyOf": [
+                {
                   "type": "object",
                   "properties": {
-                    "apCost": {
-                      "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
                     },
-                    "ingredients": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "capabilities": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "itemId": {
-                            "$ref": "#/definitions/DriftContent/anyOf/0/properties/contentId"
-                          },
-                          "quantity": {
-                            "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
-                          }
-                        },
-                        "required": [
-                          "itemId",
-                          "quantity"
-                        ],
-                        "additionalProperties": false
+                        "$ref": "#/definitions/DriftContent/anyOf/0/properties/contentId"
                       },
-                      "minItems": 1
+                      "default": []
                     },
-                    "outputQuantity": {
-                      "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                    "recipe": {
+                      "type": "object",
+                      "properties": {
+                        "apCost": {
+                          "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                        },
+                        "ingredients": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "itemId": {
+                                "$ref": "#/definitions/DriftContent/anyOf/0/properties/contentId"
+                              },
+                              "quantity": {
+                                "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                              }
+                            },
+                            "required": [
+                              "itemId",
+                              "quantity"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "minItems": 1
+                        },
+                        "outputQuantity": {
+                          "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                        }
+                      },
+                      "required": [
+                        "apCost",
+                        "ingredients",
+                        "outputQuantity"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "resource"
                     }
                   },
                   "required": [
-                    "apCost",
-                    "ingredients",
-                    "outputQuantity"
+                    "name",
+                    "description",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/name"
+                    },
+                    "description": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/description"
+                    },
+                    "capabilities": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/capabilities"
+                    },
+                    "recipe": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/recipe"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "food"
+                    },
+                    "nutrition": {
+                      "$ref": "#/definitions/DriftContent/anyOf/0/properties/version",
+                      "default": 1
+                    },
+                    "shelfLifeDays": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/DriftContent/anyOf/0/properties/version"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/name"
+                    },
+                    "description": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/description"
+                    },
+                    "capabilities": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/capabilities"
+                    },
+                    "recipe": {
+                      "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/recipe"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "tool"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "kind"
                   ],
                   "additionalProperties": false
                 }
-              },
-              "required": [
-                "name",
-                "description",
-                "kind"
-              ],
-              "additionalProperties": false
+              ]
             }
           },
           "required": [
@@ -261,7 +327,7 @@
                 "rewards": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/properties/recipe/properties/ingredients/items"
+                    "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/recipe/properties/ingredients/items"
                   }
                 }
               },
@@ -322,7 +388,7 @@
                 "costs": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/properties/recipe/properties/ingredients/items"
+                    "$ref": "#/definitions/DriftContent/anyOf/1/properties/data/anyOf/0/properties/recipe/properties/ingredients/items"
                   },
                   "minItems": 1
                 },

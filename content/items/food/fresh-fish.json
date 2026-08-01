@@ -1,0 +1,14 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "fresh-fish",
+  "version": 1,
+  "data": {
+    "name": "鲜鱼",
+    "description": "刚捕获的鱼，必须尽快食用。",
+    "kind": "food",
+    "capabilities": [],
+    "nutrition": 1,
+    "shelfLifeDays": 2
+  }
+}

@@ -37,6 +37,7 @@ import type {
   DriftCharacterEvent,
   DriftContent,
   DriftIdentity,
+  DriftInventoryLot,
   DriftPendingChoice,
   DriftUser,
 } from '../storage/schema'
@@ -76,6 +77,8 @@ export class DriftService extends Service {
 
   protected async start() {
     const builtin = await readBuiltinContent(false)
+    const existingRows = await this.ctx.database.get('drift_content', {})
+    this.assertStableItemKinds(existingRows, builtin.definitions)
     const now = this.now()
     for (const seed of builtin.definitions) {
       const [existing] = await this.ctx.database.get('drift_content', {
@@ -104,6 +107,7 @@ export class DriftService extends Service {
     }
     const rows = await this.ctx.database.get('drift_content', {})
     this.content.load(rows)
+    await this.transact(db => this.migrateLegacyFood(db))
   }
 
   async createCharacter(actor: ActorIdentity, name: string | undefined, requestId: string): Promise<GameResult> {
@@ -140,12 +144,7 @@ export class DriftService extends Service {
         createdAt: now,
         updatedAt: now,
       })
-      await db.create('drift_inventory', {
-        characterId: character.id,
-        itemId: 'ration',
-        quantity: initialRations,
-        updatedAt: now,
-      })
+      await this.adjustInventory(db, character.id, 'ration', initialRations)
       await db.set('drift_user', { id: user.id }, {
         activeCharacterId: character.id,
         revision: user.revision + 1,
@@ -244,16 +243,21 @@ export class DriftService extends Service {
       const prepared = await this.prepareAction(db, character, actionId, inventory)
       if (!prepared.ok) return prepared.result
 
+      const spoiledMessage = this.spoilageMessage(await this.cleanupExpiredFood(db, character.id))
       const provision = await this.settleProvision(db, user, character, inventory)
       if (!provision.alive) {
-        await this.log(db, requestId, user.id, character.id, actionId, {}, provision.result)
-        return provision.result
+        const result = {
+          ...provision.result,
+          message: [spoiledMessage, provision.result.message].filter(Boolean).join('\n'),
+        }
+        await this.log(db, requestId, user.id, character.id, actionId, {}, result)
+        return result
       }
 
       const actionResult = await this.applyAction(db, user, character, actionId, prepared.region, prepared.item, prepared.building, inventory)
       const result = {
         ...actionResult,
-        message: [provision.message, actionResult.message].filter(Boolean).join('\n'),
+        message: [spoiledMessage, provision.message, actionResult.message].filter(Boolean).join('\n'),
       }
       await this.log(db, requestId, user.id, character.id, actionId, {}, result)
       return result
@@ -334,15 +338,31 @@ export class DriftService extends Service {
     return this.transact(async (db) => {
       const user = await this.resolveUser(db, actor)
       const character = await this.activeCharacter(db, user)
-      if (!character) return { characterId: null, items: [] }
+      if (!character) return { characterId: null, items: [], spoiled: [] }
+      const spoiled = await this.cleanupExpiredFood(db, character.id)
       const rows = await db.get('drift_inventory', { characterId: character.id })
+      const lots = await this.freshFoodLots(db, character.id)
       return {
         characterId: character.id,
-        items: rows.map(row => ({
-          itemId: row.itemId,
-          name: this.content.item(row.itemId).name,
-          quantity: row.quantity,
-        })).sort((a, b) => a.itemId.localeCompare(b.itemId)),
+        items: [
+          ...rows.map(row => ({
+            itemId: row.itemId,
+            name: this.content.item(row.itemId).name,
+            quantity: row.quantity,
+          })),
+          ...lots.map(lot => ({
+            itemId: lot.itemId,
+            name: this.content.item(lot.itemId).name,
+            quantity: lot.quantity,
+            acquiredOn: lot.acquiredOn,
+            expiresOn: lot.expiresOn,
+          })),
+        ].sort((a, b) => (
+          a.itemId.localeCompare(b.itemId)
+          || String('expiresOn' in a ? a.expiresOn ?? '9999-99-99' : '')
+            .localeCompare(String('expiresOn' in b ? b.expiresOn ?? '9999-99-99' : ''))
+        )),
+        spoiled: this.spoiledEntries(spoiled),
       }
     })
   }
@@ -388,7 +408,7 @@ export class DriftService extends Service {
   }
 
   findCraftableItem(query?: string) {
-    if (!query?.trim()) return this.content.item('ration') ? 'ration' : undefined
+    if (!query?.trim()) return undefined
     return this.content.findCraftableItem(query)?.[0]
   }
 
@@ -400,6 +420,7 @@ export class DriftService extends Service {
     try {
       const sources = await readContentSources(this.contentDir, true)
       const rows = await this.ctx.database.get('drift_content', {})
+      this.assertStableItemKinds(rows, sources.definitions)
       new ContentStore().load(this.runtimeContentRows(rows, sources.definitions))
       return this.contentReport('content-valid', '内容校验通过。', sources)
     } catch (error) {
@@ -411,6 +432,7 @@ export class DriftService extends Service {
     try {
       const sources = await readContentSources(this.contentDir, true)
       const rows = await this.ctx.database.get('drift_content', {})
+      this.assertStableItemKinds(rows, sources.definitions)
       const candidate = this.runtimeContentRows(rows, sources.definitions)
       this.content.load(candidate)
       return this.contentReport('content-loaded', '内容已热加载到内存，数据库未修改。', sources)
@@ -427,6 +449,7 @@ export class DriftService extends Service {
       let skipped = 0
       await this.transact(async (db) => {
         const rows = await db.get('drift_content', {})
+        this.assertStableItemKinds(rows, sources.definitions)
         const byKey = new Map(rows.map(row => [`${row.type}:${row.contentId}`, row]))
         const creates: ContentFileDefinition[] = []
         const updates: Array<{ row: DriftContent, definition: ContentFileDefinition }> = []
@@ -475,6 +498,7 @@ export class DriftService extends Service {
         }
       })
       this.content.load(await this.ctx.database.get('drift_content', {}))
+      await this.transact(db => this.migrateLegacyFood(db))
       return {
         ...this.contentReport('content-synced', '内容已发布到数据库。', sources),
         inserted,
@@ -509,6 +533,7 @@ export class DriftService extends Service {
 
       const now = this.now()
       await db.remove('drift_inventory', { characterId: character.id })
+      await db.remove('drift_inventory_lot', { characterId: character.id })
       await db.remove('drift_character_building', { characterId: character.id })
       await db.remove('drift_pending_choice', { characterId: character.id })
       await db.remove('drift_character_event', { characterId: character.id })
@@ -550,12 +575,7 @@ export class DriftService extends Service {
         diedAt: character.diedAt,
         updatedAt: character.updatedAt,
       })
-      await db.create('drift_inventory', {
-        characterId: character.id,
-        itemId: 'ration',
-        quantity: initialRations,
-        updatedAt: now,
-      })
+      await this.adjustInventory(db, character.id, 'ration', initialRations)
       const result = this.success('debug-reset', `“${character.name}”已恢复到初始状态。`, {
         character: this.characterSnapshot(character),
       })
@@ -878,7 +898,7 @@ export class DriftService extends Service {
     db: DriftDatabase,
     user: DriftUser,
     character: DriftCharacter,
-    inventory: Map<string, number>,
+    _inventory: Map<string, number>,
   ): Promise<{ alive: boolean, message: string, result: GameResult }> {
     const today = this.localDate(this.now())
     if (character.provisionDate === today) {
@@ -888,9 +908,9 @@ export class DriftService extends Service {
     character.provisionDate = today
     character.revision += 1
     character.updatedAt = this.now()
-    if ((inventory.get('ration') ?? 0) > 0) {
-      await this.adjustInventory(db, character.id, 'ration', -1)
-      inventory.set('ration', (inventory.get('ration') ?? 0) - 1)
+    const [food] = await this.freshFoodLots(db, character.id)
+    if (food) {
+      await this.adjustInventory(db, character.id, food.itemId, -1)
       character.hungerDays = 0
       await db.set('drift_character', { id: character.id }, {
         provisionDate: today,
@@ -898,7 +918,11 @@ export class DriftService extends Service {
         revision: character.revision,
         updatedAt: character.updatedAt,
       })
-      return { alive: true, message: '今天消耗了 1 份口粮。', result: this.success('provision-settled', '') }
+      return {
+        alive: true,
+        message: `今天消耗了 1 份${this.content.item(food.itemId).name}。`,
+        result: this.success('provision-settled', ''),
+      }
     }
 
     character.hungerDays += 1
@@ -1003,6 +1027,10 @@ export class DriftService extends Service {
     }
     if (pending.kind === 'event') {
       await this.recordEventChoice(db, character, pending.sourceId, option.id)
+      const spoiledMessage = this.spoilageMessage(await this.cleanupExpiredFood(db, character.id))
+      if (spoiledMessage) {
+        result = { ...result, message: [spoiledMessage, result.message].filter(Boolean).join('\n') }
+      }
     }
     await db.remove('drift_pending_choice', { characterId: character.id })
     if (timeout) {
@@ -1401,10 +1429,21 @@ export class DriftService extends Service {
 
   private async inventoryMap(db: DriftDatabase, characterId: number) {
     const rows = await db.get('drift_inventory', { characterId })
-    return new Map(rows.map(row => [row.itemId, row.quantity]))
+    const inventory = new Map(rows.map(row => [row.itemId, row.quantity]))
+    for (const lot of await this.freshFoodLots(db, characterId)) {
+      inventory.set(lot.itemId, (inventory.get(lot.itemId) ?? 0) + lot.quantity)
+    }
+    return inventory
   }
 
   private async adjustInventory(db: DriftDatabase, characterId: number, itemId: string, delta: number) {
+    if (!delta) return
+    const item = this.content.item(itemId)
+    if (item.kind === 'food') {
+      if (delta > 0) await this.addFoodLot(db, characterId, itemId, delta)
+      else await this.consumeFoodLots(db, characterId, itemId, -delta)
+      return
+    }
     const [current] = await db.get('drift_inventory', { characterId, itemId })
     const quantity = (current?.quantity ?? 0) + delta
     if (quantity < 0) throw new Error(`角色 ${characterId} 的物品 ${itemId} 数量不足`)
@@ -1417,6 +1456,101 @@ export class DriftService extends Service {
       await db.set('drift_inventory', { characterId, itemId }, { quantity, updatedAt })
     } else {
       await db.create('drift_inventory', { characterId, itemId, quantity, updatedAt })
+    }
+  }
+
+  private async addFoodLot(db: DriftDatabase, characterId: number, itemId: string, quantity: number) {
+    const item = this.content.item(itemId)
+    if (item.kind !== 'food') throw new Error(`物品 ${itemId} 不是食物`)
+    const now = this.now()
+    const acquiredOn = this.localDate(now)
+    const expiresOn = item.shelfLifeDays === null
+      ? null
+      : this.addLocalDays(acquiredOn, item.shelfLifeDays)
+    const existing = (await db.get('drift_inventory_lot', { characterId, itemId }))
+      .find(lot => lot.expiresOn === expiresOn)
+    if (existing) {
+      await db.set('drift_inventory_lot', { id: existing.id }, {
+        quantity: existing.quantity + quantity,
+        updatedAt: now,
+      })
+      return
+    }
+    await db.create('drift_inventory_lot', {
+      characterId,
+      itemId,
+      quantity,
+      acquiredOn,
+      expiresOn,
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  private async consumeFoodLots(db: DriftDatabase, characterId: number, itemId: string, quantity: number) {
+    const lots = (await this.freshFoodLots(db, characterId)).filter(lot => lot.itemId === itemId)
+    if (lots.reduce((sum, lot) => sum + lot.quantity, 0) < quantity) {
+      throw new Error(`角色 ${characterId} 的物品 ${itemId} 数量不足`)
+    }
+    let remaining = quantity
+    for (const lot of lots) {
+      if (!remaining) break
+      const consumed = Math.min(remaining, lot.quantity)
+      const nextQuantity = lot.quantity - consumed
+      if (nextQuantity) {
+        await db.set('drift_inventory_lot', { id: lot.id }, {
+          quantity: nextQuantity,
+          updatedAt: this.now(),
+        })
+      } else {
+        await db.remove('drift_inventory_lot', { id: lot.id })
+      }
+      remaining -= consumed
+    }
+  }
+
+  private async freshFoodLots(db: DriftDatabase, characterId: number) {
+    const today = this.localDate(this.now())
+    const lots = await db.get('drift_inventory_lot', { characterId })
+    return lots.filter(lot => lot.quantity > 0 && (lot.expiresOn === null || lot.expiresOn > today))
+      .sort((a, b) => (
+        (a.expiresOn ?? '9999-99-99').localeCompare(b.expiresOn ?? '9999-99-99')
+        || a.acquiredOn.localeCompare(b.acquiredOn)
+        || a.id - b.id
+      ))
+  }
+
+  private async cleanupExpiredFood(db: DriftDatabase, characterId: number) {
+    const today = this.localDate(this.now())
+    const expired = (await db.get('drift_inventory_lot', { characterId }))
+      .filter(lot => lot.quantity > 0 && lot.expiresOn !== null && lot.expiresOn <= today)
+    for (const lot of expired) await db.remove('drift_inventory_lot', { id: lot.id })
+    return expired
+  }
+
+  private spoiledEntries(lots: DriftInventoryLot[]) {
+    const quantities = new Map<string, number>()
+    for (const lot of lots) quantities.set(lot.itemId, (quantities.get(lot.itemId) ?? 0) + lot.quantity)
+    return [...quantities.entries()].map(([itemId, quantity]) => ({
+      itemId,
+      name: this.content.item(itemId).name,
+      quantity,
+    })).sort((a, b) => a.itemId.localeCompare(b.itemId))
+  }
+
+  private spoilageMessage(lots: DriftInventoryLot[]) {
+    const entries = this.spoiledEntries(lots)
+    if (!entries.length) return ''
+    return `已丢弃腐坏食物：${entries.map(entry => `${entry.name} x${entry.quantity}`).join('、')}。`
+  }
+
+  private async migrateLegacyFood(db: DriftDatabase) {
+    const rows = await db.get('drift_inventory', {})
+    for (const row of rows) {
+      const item = this.content.item(row.itemId)
+      if (item.kind !== 'food') continue
+      await this.addFoodLot(db, row.characterId, row.itemId, row.quantity)
+      await db.remove('drift_inventory', { characterId: row.characterId, itemId: row.itemId })
     }
   }
 
@@ -1521,6 +1655,23 @@ export class DriftService extends Service {
     }).formatToParts(date)
     const value = Object.fromEntries(parts.map(part => [part.type, part.value]))
     return `${value.year}-${value.month}-${value.day}`
+  }
+
+  private addLocalDays(date: string, days: number) {
+    const [year, month, day] = date.split('-').map(Number)
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
+  }
+
+  private assertStableItemKinds(rows: DriftContent[], definitions: ContentFileDefinition[]) {
+    const existing = new Map(rows.filter(row => row.type === 'item').map(row => [row.contentId, row]))
+    for (const definition of definitions) {
+      if (definition.type !== 'item') continue
+      const row = existing.get(definition.contentId)
+      if (!row?.data?.kind || row.data.kind === definition.data.kind) continue
+      throw new Error(
+        `内容 item:${definition.contentId} 不能从 ${row.data.kind} 改为 ${definition.data.kind}；请创建新的 contentId`,
+      )
+    }
   }
 
   private runtimeContentRows(rows: DriftContent[], definitions: ContentFileDefinition[]) {

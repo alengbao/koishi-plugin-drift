@@ -2,22 +2,13 @@
   "$schema": "../../drift-content.schema.json",
   "type": "item",
   "contentId": "ration",
-  "version": 1,
+  "version": 2,
   "data": {
     "name": "口粮",
     "description": "开始一天行动时自动消耗。",
     "kind": "food",
     "capabilities": [],
     "nutrition": 1,
-    "recipe": {
-      "apCost": 1,
-      "ingredients": [
-        {
-          "itemId": "wood",
-          "quantity": 2
-        }
-      ],
-      "outputQuantity": 1
-    }
+    "shelfLifeDays": null
   }
 }

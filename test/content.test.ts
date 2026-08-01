@@ -24,9 +24,14 @@ describe('content validation', () => {
     const store = new ContentStore()
     const content = await rows()
     store.load(content)
-    expect(content).toHaveLength(15)
+    expect(content).toHaveLength(18)
     expect(store.region('forest').name).toBe('森林')
-    expect(store.item('ration').recipe?.ingredients).toEqual([{ itemId: 'wood', quantity: 2 }])
+    expect(store.item('ration')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: null })
+    expect(store.item('ration').recipe).toBeUndefined()
+    expect(store.item('fresh-fish')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: 2 })
+    expect(store.item('raw-meat')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: 3 })
+    expect(store.item('wild-mushroom')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: 4 })
+    expect(store.item('wild-fruit')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: 6 })
     expect(store.item('stone-axe').capabilities).toEqual(['cut-wood'])
     expect(store.enemy('wild-rat').maxHp).toBe(2)
   })
@@ -70,5 +75,21 @@ describe('content validation', () => {
     if (parsed.type !== 'event') throw new Error('expected event')
     expect(parsed.data.cooldownMs).toBe(0)
     expect(parsed.data.variants[0].choices.find(choice => choice.default)?.id).toBe('leave')
+  })
+
+  it('normalizes legacy food as nutritious and shelf stable', () => {
+    const parsed = contentDefinitionSchema.parse({
+      type: 'item',
+      contentId: 'legacy-food',
+      data: {
+        name: '旧食物',
+        description: '旧格式食物',
+        kind: 'food',
+        capabilities: [],
+      },
+    })
+    if (parsed.type !== 'item' || parsed.data.kind !== 'food') throw new Error('expected food')
+    expect(parsed.data.nutrition).toBe(1)
+    expect(parsed.data.shelfLifeDays).toBeNull()
   })
 })

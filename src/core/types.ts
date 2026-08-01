@@ -44,11 +44,20 @@ export interface InventoryEntry {
   itemId: string
   name: string
   quantity: number
+  acquiredOn?: string
+  expiresOn?: string | null
+}
+
+export interface SpoiledInventoryEntry {
+  itemId: string
+  name: string
+  quantity: number
 }
 
 export interface InventoryView {
   characterId: number | null
   items: InventoryEntry[]
+  spoiled: SpoiledInventoryEntry[]
 }
 
 export interface CampEntry {

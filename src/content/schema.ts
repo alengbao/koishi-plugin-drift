@@ -114,18 +114,27 @@ export const regionDataSchema = z.object({
   buildingIds: z.array(id),
 })
 
-export const itemDataSchema = z.object({
+const itemBase = {
   name: z.string().min(1),
   description: z.string(),
-  kind: z.enum(['resource', 'food', 'tool']),
   capabilities: z.array(id).default([]),
-  nutrition: positiveInteger.optional(),
   recipe: z.object({
     apCost: positiveInteger,
     ingredients: z.array(itemQuantity).min(1),
     outputQuantity: positiveInteger,
   }).optional(),
-})
+}
+
+export const itemDataSchema = z.discriminatedUnion('kind', [
+  z.object({ ...itemBase, kind: z.literal('resource') }),
+  z.object({
+    ...itemBase,
+    kind: z.literal('food'),
+    nutrition: positiveInteger.default(1),
+    shelfLifeDays: positiveInteger.nullable().default(null),
+  }),
+  z.object({ ...itemBase, kind: z.literal('tool') }),
+])
 
 export const enemyDataSchema = z.object({
   name: z.string().min(1),

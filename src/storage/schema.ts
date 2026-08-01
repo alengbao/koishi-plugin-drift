@@ -57,6 +57,17 @@ export interface DriftInventory {
   updatedAt: Date
 }
 
+export interface DriftInventoryLot {
+  id: number
+  characterId: number
+  itemId: string
+  quantity: number
+  acquiredOn: string
+  expiresOn: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
 export interface DriftCharacterBuilding {
   characterId: number
   regionId: string
@@ -119,6 +130,7 @@ declare module 'koishi' {
     drift_identity: DriftIdentity
     drift_character: DriftCharacter
     drift_inventory: DriftInventory
+    drift_inventory_lot: DriftInventoryLot
     drift_character_building: DriftCharacterBuilding
     drift_pending_choice: DriftPendingChoice
     drift_character_event: DriftCharacterEvent
@@ -190,6 +202,23 @@ export function defineModels(ctx: Context) {
     updatedAt: 'timestamp',
   }, {
     primary: ['characterId', 'itemId'],
+  })
+
+  ctx.model.extend('drift_inventory_lot', {
+    id: 'unsigned',
+    characterId: 'unsigned',
+    itemId: 'string(64)',
+    quantity: 'integer',
+    acquiredOn: 'char(10)',
+    expiresOn: { type: 'char', length: 10, nullable: true },
+    createdAt: 'timestamp',
+    updatedAt: 'timestamp',
+  }, {
+    autoInc: true,
+    indexes: [
+      ['characterId', 'itemId'],
+      ['characterId', 'expiresOn'],
+    ],
   })
 
   ctx.model.extend('drift_character_building', {

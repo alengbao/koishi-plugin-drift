@@ -25,8 +25,9 @@ describe('DriftService with SQLite', () => {
     choiceTimeout = 5 * 60 * 1000,
     initialRandom = 0,
     contentDir?: string,
+    initialNow = '2026-07-30T04:00:00.000Z',
   ) {
-    let current = new Date('2026-07-30T04:00:00.000Z')
+    let current = new Date(initialNow)
     let randomValue = initialRandom
     const ctx = new Context()
     contexts.push(ctx)
@@ -60,11 +61,11 @@ describe('DriftService with SQLite', () => {
     return user.activeCharacterId!
   }
 
-  it('creates all nine tables and seeds content', async () => {
+  it('creates all ten tables and seeds content', async () => {
     const { ctx } = await createService()
     const tableNames = Object.keys(ctx.model.tables).filter(name => name.startsWith('drift_'))
-    expect(tableNames).toHaveLength(9)
-    expect(await ctx.database.get('drift_content', {})).toHaveLength(15)
+    expect(tableNames).toHaveLength(10)
+    expect(await ctx.database.get('drift_content', {})).toHaveLength(18)
   })
 
   it('creates a default character and makes repeated writes idempotent', async () => {
@@ -79,7 +80,7 @@ describe('DriftService with SQLite', () => {
 
     const inventory = await service.getInventory(actor('one'))
     expect(inventory.items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 2 },
+      { itemId: 'ration', name: '口粮', quantity: 2, acquiredOn: '2026-07-30', expiresOn: null },
       { itemId: 'wood', name: '木材', quantity: 1 },
     ])
     expect((await service.getStatus(actor('one'))).character?.actionPoints).toBe(2)
@@ -98,7 +99,7 @@ describe('DriftService with SQLite', () => {
     })
     expect(await service.executeAction(actor('invalid'), 'craft:ration', 'unavailable-action')).toMatchObject({
       ok: false,
-      code: 'requirements-not-met',
+      code: 'invalid-action',
     })
     expect((await service.getStatus(actor('invalid'))).character).toMatchObject({
       hp: 5,
@@ -106,11 +107,98 @@ describe('DriftService with SQLite', () => {
       hungerDays: 0,
     })
     expect((await service.getInventory(actor('invalid'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 3 },
+      { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
     ])
   })
 
-  it('collects, crafts, builds, explores, and settles automatic combat', async () => {
+  it('creates dated food batches and merges matching expiry dates', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('food-batches'), '食物测试者', 'food-batches-create')
+    game.setNow('2026-08-01T04:00:00.000Z')
+    await game.service.debugGiveItem(actor('food-batches'), 'fresh-fish', 2, 'food-batches-fish-1')
+    await game.service.debugGiveItem(actor('food-batches'), '鲜鱼', 1, 'food-batches-fish-2')
+    await game.service.debugGiveItem(actor('food-batches'), 'raw-meat', 1, 'food-batches-meat')
+    await game.service.debugGiveItem(actor('food-batches'), 'wild-mushroom', 1, 'food-batches-mushroom')
+    await game.service.debugGiveItem(actor('food-batches'), 'wild-fruit', 1, 'food-batches-fruit')
+
+    expect((await game.service.getInventory(actor('food-batches'))).items).toEqual([
+      { itemId: 'fresh-fish', name: '鲜鱼', quantity: 3, acquiredOn: '2026-08-01', expiresOn: '2026-08-03' },
+      { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
+      { itemId: 'raw-meat', name: '生肉', quantity: 1, acquiredOn: '2026-08-01', expiresOn: '2026-08-04' },
+      { itemId: 'wild-fruit', name: '野果', quantity: 1, acquiredOn: '2026-08-01', expiresOn: '2026-08-07' },
+      { itemId: 'wild-mushroom', name: '野生菌', quantity: 1, acquiredOn: '2026-08-01', expiresOn: '2026-08-05' },
+    ])
+  })
+
+  it('consumes food by earliest expiry and only once per action day', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('food-order'), '进食测试者', 'food-order-create')
+    game.setNow('2026-08-01T04:00:00.000Z')
+    await game.service.debugGiveItem(actor('food-order'), 'raw-meat', 1, 'food-order-meat')
+    await game.service.debugGiveItem(actor('food-order'), 'fresh-fish', 1, 'food-order-fish')
+
+    const first = await game.service.executeAction(actor('food-order'), 'collect', 'food-order-day-1-first')
+    expect(first.message).toContain('今天消耗了 1 份鲜鱼。')
+    await game.service.executeAction(actor('food-order'), 'collect', 'food-order-day-1-second')
+    expect((await game.service.getInventory(actor('food-order'))).items).toEqual(expect.arrayContaining([
+      { itemId: 'raw-meat', name: '生肉', quantity: 1, acquiredOn: '2026-08-01', expiresOn: '2026-08-04' },
+      { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
+    ]))
+
+    game.setNow('2026-08-02T04:00:00.000Z')
+    const secondDay = await game.service.executeAction(actor('food-order'), 'collect', 'food-order-day-2')
+    expect(secondDay.message).toContain('今天消耗了 1 份生肉。')
+    expect((await game.service.getInventory(actor('food-order'))).items).toContainEqual({
+      itemId: 'ration',
+      name: '口粮',
+      quantity: 3,
+      acquiredOn: '2026-07-30',
+      expiresOn: null,
+    })
+  })
+
+  it('spoils food on calendar boundaries without mutating invalid actions', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('food-spoilage'), '腐坏测试者', 'food-spoilage-create')
+    const characterId = await activeCharacterId(game.ctx, 'food-spoilage')
+    await game.ctx.database.remove('drift_inventory_lot', { characterId, itemId: 'ration' })
+    game.setNow('2026-08-01T04:00:00.000Z')
+    await game.service.debugGiveItem(actor('food-spoilage'), 'fresh-fish', 2, 'food-spoilage-fish')
+
+    game.setNow('2026-08-02T15:59:59.000Z')
+    expect((await game.service.getInventory(actor('food-spoilage'))).items).toContainEqual({
+      itemId: 'fresh-fish',
+      name: '鲜鱼',
+      quantity: 2,
+      acquiredOn: '2026-08-01',
+      expiresOn: '2026-08-03',
+    })
+
+    game.setNow('2026-08-02T16:00:00.000Z')
+    expect(await game.service.executeAction(actor('food-spoilage'), 'unknown', 'food-spoilage-invalid')).toMatchObject({
+      ok: false,
+      code: 'invalid-action',
+    })
+    expect(await game.ctx.database.get('drift_inventory_lot', { characterId, itemId: 'fresh-fish' })).toHaveLength(1)
+
+    const action = await game.service.executeAction(actor('food-spoilage'), 'collect', 'food-spoilage-valid')
+    expect(action.message).toContain('已丢弃腐坏食物：鲜鱼 x2。')
+    expect(action.message).toContain('今天没有口粮，失去 1 点生命')
+    expect(await game.ctx.database.get('drift_inventory_lot', { characterId, itemId: 'fresh-fish' })).toHaveLength(0)
+  })
+
+  it('cleans expired batches when inventory is viewed', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('food-inventory-cleanup'), '背包测试者', 'food-inventory-cleanup-create')
+    game.setNow('2026-08-01T04:00:00.000Z')
+    await game.service.debugGiveItem(actor('food-inventory-cleanup'), 'fresh-fish', 1, 'food-inventory-cleanup-fish')
+    game.setNow('2026-08-02T16:00:00.000Z')
+    const inventory = await game.service.getInventory(actor('food-inventory-cleanup'))
+    expect(inventory.spoiled).toEqual([{ itemId: 'fresh-fish', name: '鲜鱼', quantity: 1 }])
+    expect(inventory.items.some(item => item.itemId === 'fresh-fish')).toBe(false)
+  })
+
+  it('collects, builds, explores, and settles automatic combat', async () => {
     const game = await createService()
     await game.service.createCharacter(actor('builder'), '建造者', 'builder-create')
     await game.service.executeAction(actor('builder'), 'collect', 'builder-collect-1')
@@ -131,15 +219,6 @@ describe('DriftService with SQLite', () => {
     expect(combat.code).toBe('combat-won')
     expect((await game.service.getStatus(actor('fighter'))).character?.hp).toBe(4)
 
-    game.setRandom(0)
-    await game.service.createCharacter(actor('crafter'), '工匠', 'crafter-create')
-    await game.service.executeAction(actor('crafter'), 'collect', 'crafter-collect-1')
-    await game.service.executeAction(actor('crafter'), 'collect', 'crafter-collect-2')
-    const crafted = await game.service.executeAction(actor('crafter'), 'craft:ration', 'crafter-craft')
-    expect(crafted.message).toContain('制作了 1 份口粮')
-    expect((await game.service.getInventory(actor('crafter'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 3 },
-    ])
   })
 
   it('refreshes AP lazily and only starves on active days', async () => {
@@ -411,7 +490,7 @@ describe('DriftService with SQLite', () => {
       code: 'requirements-not-met',
     })
     expect((await service.getInventory(actor('effects'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 3 },
+      { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
     ])
     expect((await service.getStatus(actor('effects'))).pendingTitle).toBeTruthy()
 
@@ -514,8 +593,47 @@ describe('DriftService with SQLite', () => {
     const result = await service.resolveChoice(actor('doomed'), 'investigate', 'doomed-fight')
     expect(result.code).toBe('character-died')
     expect((await service.getHistory(actor('doomed'))).characters[0].deathCause).toBe('combat')
-    const inventory = await ctx.database.get('drift_inventory', { characterId: user.activeCharacterId! })
-    expect(inventory).toMatchObject([{ itemId: 'ration', quantity: 2 }])
+    const inventory = await ctx.database.get('drift_inventory_lot', { characterId: user.activeCharacterId! })
+    expect(inventory).toMatchObject([{ itemId: 'ration', quantity: 2, expiresOn: null }])
+  })
+
+  it('migrates legacy food inventory from the upgrade day exactly once', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'drift-food-migration-'))
+    temporaryDirectories.push(directory)
+    const databasePath = join(directory, 'drift.db')
+    const first = await createService(databasePath)
+    await first.service.createCharacter(actor('legacy-food'), '旧库存玩家', 'legacy-food-create')
+    const characterId = await activeCharacterId(first.ctx, 'legacy-food')
+    await first.ctx.database.remove('drift_inventory_lot', { characterId })
+    const updatedAt = new Date('2026-07-01T00:00:00.000Z')
+    await first.ctx.database.create('drift_inventory', { characterId, itemId: 'ration', quantity: 3, updatedAt })
+    await first.ctx.database.create('drift_inventory', { characterId, itemId: 'wild-mushroom', quantity: 2, updatedAt })
+    await first.ctx.stop()
+    contexts.splice(contexts.indexOf(first.ctx), 1)
+
+    const second = await createService(
+      databasePath,
+      5 * 60 * 1000,
+      0,
+      undefined,
+      '2026-08-01T04:00:00.000Z',
+    )
+    expect(await second.ctx.database.get('drift_inventory', { characterId })).toHaveLength(0)
+    expect(await second.ctx.database.get('drift_inventory_lot', { characterId })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'ration', quantity: 3, acquiredOn: '2026-08-01', expiresOn: null }),
+      expect.objectContaining({ itemId: 'wild-mushroom', quantity: 2, acquiredOn: '2026-08-01', expiresOn: '2026-08-05' }),
+    ]))
+    await second.ctx.stop()
+    contexts.splice(contexts.indexOf(second.ctx), 1)
+
+    const third = await createService(
+      databasePath,
+      5 * 60 * 1000,
+      0,
+      undefined,
+      '2026-08-02T04:00:00.000Z',
+    )
+    expect(await third.ctx.database.get('drift_inventory_lot', { characterId })).toHaveLength(2)
   })
 
   it('does not overwrite existing seed rows on a later startup', async () => {
@@ -533,7 +651,7 @@ describe('DriftService with SQLite', () => {
     const second = await createService(databasePath)
     const [preserved] = await second.ctx.database.get('drift_content', { type: 'region', contentId: 'forest' })
     expect(preserved.data.name).toBe('自定义森林')
-    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(15)
+    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(18)
   })
 
   it('applies a seed update only when its version increases', async () => {
@@ -595,7 +713,7 @@ describe('DriftService with SQLite', () => {
       hungerDays: 0,
     })
     expect((await game.service.getInventory(actor('developer'))).items).toEqual([
-      { itemId: 'ration', name: '口粮', quantity: 3 },
+      { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
     ])
     expect(await game.ctx.database.get('drift_action_log', { characterId })).not.toHaveLength(0)
   })
@@ -618,7 +736,7 @@ describe('DriftService with SQLite', () => {
     }
     await writeFile(overridePath, `${JSON.stringify(override, null, 2)}\n`)
 
-    expect(await game.service.checkContent()).toMatchObject({ ok: true, externalCount: 1, totalCount: 15 })
+    expect(await game.service.checkContent()).toMatchObject({ ok: true, externalCount: 1, totalCount: 18 })
     expect(await game.service.loadContent()).toMatchObject({ ok: true, code: 'content-loaded' })
     expect(await game.service.debugGiveItem(actor('content-dev'), '测试木材', 1, 'content-dev-give')).toMatchObject({ ok: true })
 
@@ -639,10 +757,26 @@ describe('DriftService with SQLite', () => {
       data: { ...override.data, description: '同版本冲突' },
     }, null, 2)}\n`)
     expect(await game.service.syncContent()).toMatchObject({ ok: false, code: 'content-sync-failed' })
+
+    await writeFile(overridePath, `${JSON.stringify({
+      ...override,
+      version: 3,
+      data: {
+        name: '食物木材',
+        description: '非法改变物品种类',
+        kind: 'food',
+        capabilities: [],
+        nutrition: 1,
+        shelfLifeDays: null,
+      },
+    }, null, 2)}\n`)
+    expect(await game.service.checkContent()).toMatchObject({ ok: false, code: 'content-invalid' })
+    expect(await game.service.syncContent()).toMatchObject({ ok: false, code: 'content-sync-failed' })
+
     const exportResult = await game.service.exportContent('item', 'ration', false)
     expect(exportResult).toMatchObject({ ok: true, code: 'content-exported' })
     const exported = JSON.parse(await readFile(exportResult.path!, 'utf8'))
-    expect(exported).toMatchObject({ type: 'item', contentId: 'ration', version: 2 })
+    expect(exported).toMatchObject({ type: 'item', contentId: 'ration', version: 3 })
     expect(await game.service.exportContent('item', 'ration', false)).toMatchObject({ ok: false })
   })
 })

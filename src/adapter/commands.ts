@@ -57,7 +57,6 @@ const usageText = [
 const actionCommands: Record<string, string> = {
   collect: 'drift collect',
   explore: 'drift explore',
-  'craft:ration': 'drift craft ration',
   'build:shelter': 'drift build shelter',
 }
 
@@ -66,10 +65,22 @@ function actionCommand(actionId: string) {
   return actionCommands[actionId] ?? actionId
 }
 
-function renderInventory(view: InventoryView) {
+export function renderInventory(view: InventoryView) {
   if (!view.characterId) return '你还没有存活角色。'
-  if (!view.items.length) return '背包是空的。'
-  return ['背包：', ...view.items.map(item => `- ${item.name} x ${item.quantity}`)].join('\n')
+  const spoiled = view.spoiled.length
+    ? `已丢弃腐坏食物：${view.spoiled.map(item => `${item.name} x${item.quantity}`).join('、')}。`
+    : ''
+  const items = view.items.length
+    ? ['背包：', ...view.items.map(item => {
+      const expiry = item.expiresOn === undefined
+        ? ''
+        : item.expiresOn === null
+          ? '（长期保存）'
+          : `（${item.expiresOn} 腐坏）`
+      return `- ${item.name} x ${item.quantity}${expiry}`
+    })].join('\n')
+    : '背包是空的。'
+  return [spoiled, items].filter(Boolean).join('\n')
 }
 
 function renderCamp(view: CampView) {

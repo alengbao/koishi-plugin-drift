@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from 'koishi'
 import SQLite from '@koishijs/plugin-database-sqlite'
 import { apply } from '../src'
+import { renderInventory } from '../src/adapter/commands'
 
 describe('command registration', () => {
   let ctx: Context | undefined
@@ -67,5 +68,23 @@ describe('command registration', () => {
     ]) {
       expect(ctx.$commander.get(name), name).toBeTruthy()
     }
+  })
+
+  it('renders food batches, permanent food, and spoilage', () => {
+    expect(renderInventory({
+      characterId: 1,
+      spoiled: [{ itemId: 'fresh-fish', name: '鲜鱼', quantity: 1 }],
+      items: [
+        { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-08-01', expiresOn: null },
+        { itemId: 'fresh-fish', name: '鲜鱼', quantity: 2, acquiredOn: '2026-08-01', expiresOn: '2026-08-03' },
+        { itemId: 'wood', name: '木材', quantity: 4 },
+      ],
+    })).toBe([
+      '已丢弃腐坏食物：鲜鱼 x1。',
+      '背包：',
+      '- 口粮 x 3（长期保存）',
+      '- 鲜鱼 x 2（2026-08-03 腐坏）',
+      '- 木材 x 4',
+    ].join('\n'))
   })
 })

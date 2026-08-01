@@ -1,0 +1,14 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "item",
+  "contentId": "wild-fruit",
+  "version": 1,
+  "data": {
+    "name": "野果",
+    "description": "林间采得的果实，比肉和鱼更容易保存。",
+    "kind": "food",
+    "capabilities": [],
+    "nutrition": 1,
+    "shelfLifeDays": 6
+  }
+}
