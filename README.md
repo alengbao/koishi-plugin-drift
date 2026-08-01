@@ -16,6 +16,9 @@ npm run build
 The reusable host in `../koishi-dev` loads the compiled package through a
 local `file:` dependency. Build this package before starting that host.
 
+The ongoing feature plan is tracked in [`ROADMAP.md`](ROADMAP.md). Completed
+items are checked there after implementation and verification.
+
 ## Content
 
 Built-in content is stored as one definition per JSON file under `content/`.
