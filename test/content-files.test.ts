@@ -20,7 +20,7 @@ describe('JSON content files', () => {
   it('reads all built-in definitions recursively', async () => {
     const builtin = await readBuiltinContent(true)
     expect(builtin.mode).toBe('source')
-    expect(builtin.definitions).toHaveLength(18)
+    expect(builtin.definitions).toHaveLength(20)
     expect(builtin.definitions.map(definition => `${definition.type}:${definition.contentId}`)).toContain('event:forest-night-glow')
   })
 

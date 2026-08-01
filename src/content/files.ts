@@ -17,6 +17,7 @@ const typeDirectories: Record<ContentType, string> = {
   item: 'items',
   enemy: 'enemies',
   building: 'buildings',
+  location: 'locations',
   event: 'events',
 }
 

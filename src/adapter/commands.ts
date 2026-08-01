@@ -4,11 +4,13 @@ import {
   contentTypes,
   type ActorIdentity,
   type CampView,
+  type CharacterMapView,
   type CharacterHistory,
   type ContentReport,
   type ContentType,
   type GameSnapshot,
   type InventoryView,
+  type LocationView,
 } from '../core/types'
 import type { DriftService } from '../core/service'
 
@@ -87,6 +89,34 @@ function renderCamp(view: CampView) {
   if (!view.characterId) return '你还没有存活角色。'
   if (!view.buildings.length) return '你还没有建造任何建筑。'
   return ['营地：', ...view.buildings.map(item => `- ${item.name} Lv.${item.level}（${item.regionId}）`)].join('\n')
+}
+
+export function renderMap(view: CharacterMapView) {
+  if (!view.characterId) return '你还没有存活角色。'
+  if (!view.locations.length) return '你还没有发现任何地点。继续使用 drift explore 探索。'
+  return [
+    '已发现地点：',
+    ...view.locations.map(location => `${location.index}. ${location.name}`),
+    '使用 drift site <序号> 查看地点。',
+  ].join('\n')
+}
+
+export function renderLocation(view: LocationView) {
+  if (!view.characterId) return '你还没有存活角色。'
+  if (!view.locationId || !view.name) return '没有这个已发现地点。'
+  const interactions = view.interactions.length
+    ? view.interactions.map(interaction => {
+      const unavailable = interaction.enabled ? '' : `（不可用：${interaction.disabledReason}）`
+      return `- ${interaction.id}：${interaction.label}（${interaction.apCost} AP）${unavailable}\n  ${interaction.description}`
+    })
+    : ['- 当前没有可用互动。']
+  return [
+    `${view.index}. ${view.name}`,
+    view.description ?? '',
+    '互动：',
+    ...interactions,
+    `使用 drift site ${view.index} <互动 ID> 执行。`,
+  ].filter(Boolean).join('\n')
 }
 
 const deathCauseNames = {
@@ -230,6 +260,23 @@ export function registerCommands(ctx: Context, drift: DriftService, options: Com
 
   alias(ctx.command('drift.camp', '查看营地'), '漂流.营地')
     .action(async ({ session }) => renderCamp(await drift.getCamp(actorFrom(session!))))
+
+  alias(ctx.command('drift.map', '查看已发现地点'), '漂流.地图')
+    .action(async ({ session }) => renderMap(await drift.getMap(actorFrom(session!))))
+
+  alias(ctx.command('drift.site <number:number> [interaction:string]', '查看地点或进行互动'), '漂流.地点')
+    .action(async ({ session }, number, interaction) => {
+      if (!interaction?.trim()) {
+        return renderLocation(await drift.getLocation(actorFrom(session!), number))
+      }
+      const result = await drift.executeLocationAction(
+        actorFrom(session!),
+        number,
+        interaction,
+        requestId(session!, `site:${number}:${interaction}`),
+      )
+      return result.message
+    })
 
   alias(ctx.command('drift.history', '查看死亡角色历史'), '漂流.历史')
     .action(async ({ session }) => renderHistory(await drift.getHistory(actorFrom(session!))))

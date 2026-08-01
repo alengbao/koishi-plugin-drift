@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from 'koishi'
 import SQLite from '@koishijs/plugin-database-sqlite'
 import { apply } from '../src'
-import { renderInventory } from '../src/adapter/commands'
+import { renderInventory, renderLocation, renderMap } from '../src/adapter/commands'
 
 describe('command registration', () => {
   let ctx: Context | undefined
@@ -27,6 +27,8 @@ describe('command registration', () => {
       'drift.camp',
       'drift.history',
       'drift.suicide',
+      'drift.map',
+      'drift.site',
       '漂流',
       '漂流.创建',
       '漂流.状态',
@@ -39,6 +41,8 @@ describe('command registration', () => {
       '漂流.营地',
       '漂流.历史',
       '漂流.自尽',
+      '漂流.地图',
+      '漂流.地点',
     ]) {
       expect(ctx.$commander.get(name), name).toBeTruthy()
     }
@@ -86,5 +90,31 @@ describe('command registration', () => {
       '- 鲜鱼 x 2（2026-08-03 腐坏）',
       '- 木材 x 4',
     ].join('\n'))
+  })
+
+  it('renders discovered locations without exposing ring positions', () => {
+    expect(renderMap({
+      characterId: 1,
+      regionId: 'forest',
+      locations: [
+        { index: 1, locationId: 'river', name: '河流' },
+        { index: 2, locationId: 'cave', name: '岩洞' },
+      ],
+    })).toContain('1. 河流\n2. 岩洞')
+    expect(renderLocation({
+      characterId: 1,
+      index: 1,
+      locationId: 'river',
+      name: '河流',
+      description: '林间的河流。',
+      interactions: [{
+        id: 'fish',
+        label: '捕鱼',
+        description: '寻找鱼影。',
+        apCost: 1,
+        enabled: false,
+        disabledReason: '今天已经进行过该互动',
+      }],
+    })).toContain('fish：捕鱼（1 AP）（不可用：今天已经进行过该互动）')
   })
 })

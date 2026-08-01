@@ -1,0 +1,37 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "location",
+  "contentId": "cave",
+  "version": 1,
+  "data": {
+    "name": "岩洞",
+    "description": "岩洞入口阴凉而安静，地面散落着裸露的石块。",
+    "regionIds": [
+      "forest"
+    ],
+    "interactions": [
+      {
+        "id": "gather-stone",
+        "label": "采集石块",
+        "description": "从洞口附近挑选一块合用的石头。",
+        "apCost": 1,
+        "cooldown": {
+          "type": "localDate",
+          "days": 1
+        },
+        "conditions": [],
+        "outcome": {
+          "type": "effects",
+          "effects": [
+            {
+              "type": "gainItem",
+              "itemId": "stone",
+              "quantity": 1
+            }
+          ],
+          "message": "你在岩洞口找到了一块坚硬的石头。"
+        }
+      }
+    ]
+  }
+}

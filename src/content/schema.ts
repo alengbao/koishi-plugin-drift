@@ -21,15 +21,39 @@ const weightedEvent = z.object({
   weight: positiveInteger,
 })
 
+const locationPoolEntry = z.object({
+  locationId: id,
+  weight: positiveInteger,
+  min: nonNegativeInteger,
+  max: positiveInteger,
+}).superRefine((entry, ctx) => {
+  if (entry.max < entry.min) {
+    ctx.addIssue({ code: 'custom', message: '地点池的 max 不能小于 min', path: ['max'] })
+  }
+})
+
 const localTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
 const comparison = z.enum(['eq', 'ne', 'gt', 'gte', 'lt', 'lte'])
 
+const localTimeCondition = z.object({ type: z.literal('localTime'), start: localTime, end: localTime })
+const inventoryCondition = z.object({ type: z.literal('inventory'), itemId: id, quantity: positiveInteger })
+const capabilityCondition = z.object({ type: z.literal('capability'), capability: id })
+const hpCondition = z.object({ type: z.literal('hp'), operator: comparison, value: nonNegativeInteger })
+
 export const eventConditionSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('localTime'), start: localTime, end: localTime }),
-  z.object({ type: z.literal('inventory'), itemId: id, quantity: positiveInteger }),
-  z.object({ type: z.literal('capability'), capability: id }),
-  z.object({ type: z.literal('hp'), operator: comparison, value: nonNegativeInteger }),
+  localTimeCondition,
+  inventoryCondition,
+  capabilityCondition,
+  hpCondition,
   z.object({ type: z.literal('eventState'), key: id, operator: comparison, value: stateValue }),
+])
+
+export const locationConditionSchema = z.discriminatedUnion('type', [
+  localTimeCondition,
+  inventoryCondition,
+  capabilityCondition,
+  hpCondition,
+  z.object({ type: z.literal('locationState'), key: id, operator: comparison, value: stateValue }),
 ])
 
 export const eventEffectSchema = z.discriminatedUnion('type', [
@@ -38,6 +62,14 @@ export const eventEffectSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('adjustHp'), amount: z.number().int().refine(value => value !== 0) }),
   z.object({ type: z.literal('setState'), key: id, value: stateValue }),
   z.object({ type: z.literal('incrementState'), key: id, amount: z.number().int().refine(value => value !== 0) }),
+])
+
+export const locationEffectSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('gainItem'), itemId: id, quantity: positiveInteger }),
+  z.object({ type: z.literal('consumeItem'), itemId: id, quantity: positiveInteger }),
+  z.object({ type: z.literal('adjustHp'), amount: z.number().int().refine(value => value !== 0) }),
+  z.object({ type: z.literal('setLocationState'), key: id, value: stateValue }),
+  z.object({ type: z.literal('incrementLocationState'), key: id, amount: z.number().int().refine(value => value !== 0) }),
 ])
 
 export const eventOutcomeSchema = z.discriminatedUnion('type', [
@@ -112,6 +144,36 @@ export const regionDataSchema = z.object({
     eventPool: z.array(weightedEvent).min(1),
   }),
   buildingIds: z.array(id),
+  map: z.object({
+    ringSize: z.literal(7),
+    locationCount: z.object({ min: positiveInteger, max: positiveInteger }),
+    locationPool: z.array(locationPoolEntry).min(1),
+  }).optional().superRefine((map, ctx) => {
+    if (!map) return
+    if (map.locationCount.max < map.locationCount.min) {
+      ctx.addIssue({ code: 'custom', message: '地点数量 max 不能小于 min', path: ['locationCount', 'max'] })
+    }
+    if (map.locationCount.max > map.ringSize * 8) {
+      ctx.addIssue({ code: 'custom', message: '地点数量超过地图允许上限', path: ['locationCount', 'max'] })
+    }
+    const ids = new Set<string>()
+    let minTotal = 0
+    let maxTotal = 0
+    for (const [index, entry] of map.locationPool.entries()) {
+      if (ids.has(entry.locationId)) {
+        ctx.addIssue({ code: 'custom', message: `重复的地点 ID：${entry.locationId}`, path: ['locationPool', index, 'locationId'] })
+      }
+      ids.add(entry.locationId)
+      minTotal += entry.min
+      maxTotal += entry.max
+    }
+    if (minTotal > map.locationCount.max) {
+      ctx.addIssue({ code: 'custom', message: '地点池最小数量超过地点总数上限', path: ['locationPool'] })
+    }
+    if (maxTotal < map.locationCount.min) {
+      ctx.addIssue({ code: 'custom', message: '地点池最大数量不足以满足地点总数下限', path: ['locationPool'] })
+    }
+  }),
 })
 
 const itemBase = {
@@ -152,6 +214,43 @@ export const buildingDataSchema = z.object({
   costs: z.array(itemQuantity).min(1),
   maxLevel: positiveInteger,
   effect: z.object({ type: z.literal('none') }),
+})
+
+export const locationInteractionSchema = z.object({
+  id,
+  label: z.string().min(1),
+  description: z.string().min(1),
+  apCost: positiveInteger,
+  cooldown: z.object({
+    type: z.literal('localDate'),
+    days: positiveInteger,
+  }).nullable().default(null),
+  conditions: z.array(locationConditionSchema).default([]),
+  disabledReason: z.string().min(1).optional(),
+  outcome: z.object({
+    type: z.literal('effects'),
+    effects: z.array(locationEffectSchema).min(1),
+    message: z.string().min(1),
+  }),
+}).superRefine((interaction, ctx) => {
+  if (interaction.conditions.length && !interaction.disabledReason) {
+    ctx.addIssue({ code: 'custom', message: '有条件的地点互动必须提供 disabledReason', path: ['disabledReason'] })
+  }
+})
+
+export const locationDataSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  regionIds: z.array(id).min(1),
+  interactions: z.array(locationInteractionSchema).min(1),
+}).superRefine((location, ctx) => {
+  const ids = new Set<string>()
+  for (const [index, interaction] of location.interactions.entries()) {
+    if (ids.has(interaction.id)) {
+      ctx.addIssue({ code: 'custom', message: `重复的地点互动 ID：${interaction.id}`, path: ['interactions', index, 'id'] })
+    }
+    ids.add(interaction.id)
+  }
 })
 
 const modernEventDataSchema = z.object({
@@ -218,6 +317,7 @@ export const contentDefinitionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('item'), contentId: id, data: itemDataSchema }),
   z.object({ type: z.literal('enemy'), contentId: id, data: enemyDataSchema }),
   z.object({ type: z.literal('building'), contentId: id, data: buildingDataSchema }),
+  z.object({ type: z.literal('location'), contentId: id, data: locationDataSchema }),
   z.object({ type: z.literal('event'), contentId: id, data: eventDataSchema }),
 ])
 
@@ -234,6 +334,7 @@ export const contentFileSchema = z.discriminatedUnion('type', [
   z.object({ ...contentFileMetadata, type: z.literal('item'), contentId: id, data: itemDataSchema }),
   z.object({ ...contentFileMetadata, type: z.literal('enemy'), contentId: id, data: enemyDataSchema }),
   z.object({ ...contentFileMetadata, type: z.literal('building'), contentId: id, data: buildingDataSchema }),
+  z.object({ ...contentFileMetadata, type: z.literal('location'), contentId: id, data: locationDataSchema }),
   z.object({ ...contentFileMetadata, type: z.literal('event'), contentId: id, data: eventDataSchema }),
 ])
 
@@ -243,9 +344,13 @@ export type RegionData = z.infer<typeof regionDataSchema>
 export type ItemData = z.infer<typeof itemDataSchema>
 export type EnemyData = z.infer<typeof enemyDataSchema>
 export type BuildingData = z.infer<typeof buildingDataSchema>
+export type LocationData = z.infer<typeof locationDataSchema>
+export type LocationInteraction = z.infer<typeof locationInteractionSchema>
 export type EventData = z.infer<typeof eventDataSchema>
 export type EventCondition = z.infer<typeof eventConditionSchema>
+export type LocationCondition = z.infer<typeof locationConditionSchema>
 export type EventEffect = z.infer<typeof eventEffectSchema>
+export type LocationEffect = z.infer<typeof locationEffectSchema>
 export type EventOutcome = z.infer<typeof eventOutcomeSchema>
 export type EventChoice = z.infer<typeof eventChoiceSchema>
 export type EventVariant = z.infer<typeof eventVariantSchema>

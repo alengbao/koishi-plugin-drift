@@ -77,6 +77,8 @@ drift.craft [stone-axe]
 drift.build [shelter]
 drift.inventory
 drift.camp
+drift.map
+drift.site <number> [interaction]
 drift.history
 drift.suicide
 ```
@@ -100,6 +102,23 @@ animals, strange fungi, fallen trees, night-only lights, a tree-hole creature,
 and the original low-weight combat event. Ordinary collection yields wood or
 stone. A stone axe can be crafted from two wood and one stone and unlocks the
 high-yield fallen-tree option without being consumed.
+
+## Character maps and locations
+
+Each character owns a stable, seed-generated forest map. The map uses seven
+internal ring positions, and a position may contain any number of location
+instances. The Bot currently hides those positions and lists only discovered
+locations in discovery order through `drift map`.
+
+Exploration chooses between the existing event pool (weight 5) and location
+discovery (starting weight 1). Every event result increases the location weight
+by one; discovering one location resets it to one. A single exploration reveals
+at most one location and never also opens an event.
+
+The initial locations are rivers and caves. Use `drift site <number>` to inspect
+a discovered location, then `drift site <number> <interaction>` to act there.
+River fishing yields fresh fish and cave gathering yields stone. Both interactions
+cost one AP and reset at midnight in Asia/Shanghai.
 
 ## Food batches
 

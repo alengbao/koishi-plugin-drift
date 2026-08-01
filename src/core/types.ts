@@ -1,6 +1,6 @@
 import type { EventCondition, EventOutcome } from '../content/schema'
 
-export const contentTypes = ['region', 'item', 'enemy', 'building', 'event'] as const
+export const contentTypes = ['region', 'item', 'enemy', 'building', 'location', 'event'] as const
 export type ContentType = typeof contentTypes[number]
 
 export type CharacterStatus = 'active' | 'dead'
@@ -70,6 +70,36 @@ export interface CampEntry {
 export interface CampView {
   characterId: number | null
   buildings: CampEntry[]
+}
+
+export interface MapLocationEntry {
+  index: number
+  locationId: string
+  name: string
+}
+
+export interface CharacterMapView {
+  characterId: number | null
+  regionId?: string
+  locations: MapLocationEntry[]
+}
+
+export interface LocationInteractionOption {
+  id: string
+  label: string
+  description: string
+  apCost: number
+  enabled: boolean
+  disabledReason?: string
+}
+
+export interface LocationView {
+  characterId: number | null
+  index: number
+  locationId?: string
+  name?: string
+  description?: string
+  interactions: LocationInteractionOption[]
 }
 
 export interface HistoryEntry {

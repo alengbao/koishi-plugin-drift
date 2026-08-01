@@ -1,4 +1,5 @@
 import { $, Context, Service } from 'koishi'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { ContentStore } from '../content/store'
 import {
@@ -16,6 +17,8 @@ import type {
   EventEffect,
   EventVariant,
   ItemData,
+  LocationCondition,
+  LocationInteraction,
   RegionData,
 } from '../content/schema'
 import type {
@@ -23,6 +26,7 @@ import type {
   ActorIdentity,
   CampView,
   CharacterHistory,
+  CharacterMapView,
   CharacterSnapshot,
   ContentReport,
   ContentType,
@@ -30,11 +34,14 @@ import type {
   GameResult,
   GameSnapshot,
   InventoryView,
+  LocationView,
   PendingOption,
 } from './types'
 import type {
   DriftCharacter,
   DriftCharacterEvent,
+  DriftCharacterLocation,
+  DriftCharacterMap,
   DriftContent,
   DriftIdentity,
   DriftInventoryLot,
@@ -129,6 +136,7 @@ export class DriftService extends Service {
         speciesId: 'human',
         professionId: 'drifter',
         regionId: 'forest',
+        mapSeed: this.newMapSeed(),
         hp: initialHp,
         maxHp: initialHp,
         attack: 1,
@@ -144,6 +152,7 @@ export class DriftService extends Service {
         createdAt: now,
         updatedAt: now,
       })
+      await this.ensureCharacterMap(db, character)
       await this.adjustInventory(db, character.id, 'ration', initialRations)
       await db.set('drift_user', { id: user.id }, {
         activeCharacterId: character.id,
@@ -385,6 +394,122 @@ export class DriftService extends Service {
     })
   }
 
+  async getMap(actor: ActorIdentity): Promise<CharacterMapView> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const character = await this.activeCharacter(db, user)
+      if (!character) return { characterId: null, locations: [] }
+      await this.ensureCharacterMap(db, character)
+      const locations = await this.discoveredLocations(db, character)
+      return {
+        characterId: character.id,
+        regionId: character.regionId,
+        locations: locations.map((location, index) => ({
+          index: index + 1,
+          locationId: location.locationId,
+          name: this.locationName(location.locationId),
+        })),
+      }
+    })
+  }
+
+  async getLocation(actor: ActorIdentity, discoveryIndex: number): Promise<LocationView> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const character = await this.activeCharacter(db, user)
+      if (!character) return { characterId: null, index: discoveryIndex, interactions: [] }
+      await this.refreshActionPoints(db, character)
+      await this.ensureCharacterMap(db, character)
+      const location = await this.discoveredLocationByIndex(db, character, discoveryIndex)
+      if (!location) return { characterId: character.id, index: discoveryIndex, interactions: [] }
+      const data = this.safeLocation(location.locationId)
+      if (!data) return {
+        characterId: character.id,
+        index: discoveryIndex,
+        locationId: location.locationId,
+        name: location.locationId,
+        description: '这个地点的内容当前不可用。',
+        interactions: [],
+      }
+      const inventory = await this.inventoryMap(db, character.id)
+      return {
+        characterId: character.id,
+        index: discoveryIndex,
+        locationId: location.locationId,
+        name: data.name,
+        description: data.description,
+        interactions: data.interactions.map(interaction => {
+          const disabledReason = this.locationInteractionDisabled(interaction, location, character, inventory)
+          return {
+            id: interaction.id,
+            label: interaction.label,
+            description: interaction.description,
+            apCost: interaction.apCost,
+            enabled: !disabledReason,
+            disabledReason,
+          }
+        }),
+      }
+    })
+  }
+
+  async executeLocationAction(
+    actor: ActorIdentity,
+    discoveryIndex: number,
+    interactionQuery: string,
+    requestId: string,
+  ): Promise<GameResult> {
+    return this.transact(async (db) => {
+      const user = await this.resolveUser(db, actor)
+      const repeated = await this.repeatedResult(db, user.id, requestId)
+      if (repeated) return repeated
+      const character = await this.activeCharacter(db, user)
+      if (!character) return this.failure('no-active-character', '你还没有存活角色，请先创建角色。')
+      await this.refreshActionPoints(db, character)
+      const pendingState = await this.pendingChoiceState(db, character.id)
+      if (pendingState.expired && pendingState.pending) {
+        return this.settleChoice(db, user, character, pendingState.pending, this.defaultOption(pendingState.pending), requestId, true)
+      }
+      if (pendingState.pending) return this.failure('pending-choice', '请先处理当前选择。')
+
+      await this.ensureCharacterMap(db, character)
+      const location = await this.discoveredLocationByIndex(db, character, discoveryIndex)
+      if (!location) return this.failure('unknown-location', '没有这个已发现地点。')
+      const data = this.safeLocation(location.locationId)
+      if (!data) return this.failure('location-unavailable', '这个地点的内容当前不可用。')
+      const interaction = this.findLocationInteraction(data.interactions, interactionQuery)
+      if (!interaction) return this.failure('unknown-location-interaction', '这个地点没有该互动。')
+      const inventory = await this.inventoryMap(db, character.id)
+      const disabledReason = this.locationInteractionDisabled(interaction, location, character, inventory)
+      if (disabledReason) return this.failure('requirements-not-met', disabledReason)
+      const postProvisionMissing = await this.locationInteractionMissingAfterProvision(db, character, interaction, inventory)
+      if (postProvisionMissing) return this.failure('requirements-not-met', postProvisionMissing)
+
+      const spoiledMessage = this.spoilageMessage(await this.cleanupExpiredFood(db, character.id))
+      const provision = await this.settleProvision(db, user, character, inventory)
+      if (!provision.alive) {
+        const result = {
+          ...provision.result,
+          message: [spoiledMessage, provision.result.message].filter(Boolean).join('\n'),
+        }
+        await this.log(db, requestId, user.id, character.id, `site:${location.id}:${interaction.id}`, {}, result)
+        return result
+      }
+
+      const result = await this.applyLocationInteraction(db, user, character, location, interaction)
+      const combined = {
+        ...result,
+        message: [spoiledMessage, provision.message, result.message].filter(Boolean).join('\n'),
+      }
+      await this.log(db, requestId, user.id, character.id, `site:${location.id}:${interaction.id}`, {
+        discoveryIndex,
+        locationId: location.locationId,
+        interactionId: interaction.id,
+      }, combined)
+      return combined
+    })
+  }
+
   async getHistory(actor: ActorIdentity): Promise<CharacterHistory> {
     return this.transact(async (db) => {
       const user = await this.resolveUser(db, actor)
@@ -537,11 +662,14 @@ export class DriftService extends Service {
       await db.remove('drift_character_building', { characterId: character.id })
       await db.remove('drift_pending_choice', { characterId: character.id })
       await db.remove('drift_character_event', { characterId: character.id })
+      await db.remove('drift_character_map', { characterId: character.id })
+      await db.remove('drift_character_location', { characterId: character.id })
       Object.assign(character, {
         status: 'active' as const,
         speciesId: 'human',
         professionId: 'drifter',
         regionId: 'forest',
+        mapSeed: this.newMapSeed(),
         hp: initialHp,
         maxHp: initialHp,
         attack: 1,
@@ -561,6 +689,7 @@ export class DriftService extends Service {
         speciesId: character.speciesId,
         professionId: character.professionId,
         regionId: character.regionId,
+        mapSeed: character.mapSeed,
         hp: character.hp,
         maxHp: character.maxHp,
         attack: character.attack,
@@ -575,6 +704,7 @@ export class DriftService extends Service {
         diedAt: character.diedAt,
         updatedAt: character.updatedAt,
       })
+      await this.ensureCharacterMap(db, character)
       await this.adjustInventory(db, character.id, 'ration', initialRations)
       const result = this.success('debug-reset', `“${character.name}”已恢复到初始状态。`, {
         character: this.characterSnapshot(character),
@@ -806,14 +936,52 @@ export class DriftService extends Service {
     } else if (actionId === 'explore') {
       cost = region.explore.apCost
       const entries = await this.eligibleEventEntries(db, character, region, inventory ?? new Map())
-      if (!entries.length) {
-        await this.adjustInventory(db, character.id, 'wood', 1)
-        message = '你探索了一圈，只找到 1 份木材。'
+      const map = await this.ensureCharacterMap(db, character)
+      const undiscovered = map
+        ? (await db.get('drift_character_location', {
+          characterId: character.id,
+          regionId: character.regionId,
+        })).filter(location => location.discoveredAt === null)
+          .sort((a, b) => a.discoveryOrder - b.discoveryOrder)[0]
+        : undefined
+      const discover = undiscovered && (
+        !entries.length
+        || this.random() * (5 + map!.discoveryWeight) >= 5
+      )
+      if (discover) {
+        const now = this.now()
+        await db.set('drift_character_location', { id: undiscovered.id }, {
+          discoveredAt: now,
+          updatedAt: now,
+        })
+        await db.set('drift_character_map', {
+          characterId: character.id,
+          regionId: character.regionId,
+        }, {
+          discoveryWeight: 1,
+          nextDiscoveryOrder: undiscovered.discoveryOrder + 1,
+          updatedAt: now,
+        })
+        message = this.discoveryMessage(undiscovered.locationId)
       } else {
-        const entry = this.pickWeighted(entries)
-        const event = this.content.event(entry.eventId)
-        const opened = await this.openEventChoice(db, character, entry.eventId, event, inventory ?? new Map())
-        message = opened.message
+        if (map && undiscovered) {
+          await db.set('drift_character_map', {
+            characterId: character.id,
+            regionId: character.regionId,
+          }, {
+            discoveryWeight: map.discoveryWeight + 1,
+            updatedAt: this.now(),
+          })
+        }
+        if (!entries.length) {
+          await this.adjustInventory(db, character.id, 'wood', 1)
+          message = '你探索了一圈，只找到 1 份木材。'
+        } else {
+          const entry = this.pickWeighted(entries)
+          const event = this.content.event(entry.eventId)
+          const opened = await this.openEventChoice(db, character, entry.eventId, event, inventory ?? new Map())
+          message = opened.message
+        }
       }
     } else if (actionId.startsWith('craft:')) {
       cost = item!.recipe!.apCost
@@ -848,6 +1016,263 @@ export class DriftService extends Service {
       updatedAt: character.updatedAt,
     })
     return this.success('action-complete', message, { character: this.characterSnapshot(character) })
+  }
+
+  private async applyLocationInteraction(
+    db: DriftDatabase,
+    user: DriftUser,
+    character: DriftCharacter,
+    location: DriftCharacterLocation,
+    interaction: LocationInteraction,
+  ): Promise<GameResult> {
+    const effects = interaction.outcome.effects
+    const inventory = await this.inventoryMap(db, character.id)
+    const consumed = new Map<string, number>()
+    for (const effect of effects) {
+      if (effect.type !== 'consumeItem') continue
+      consumed.set(effect.itemId, (consumed.get(effect.itemId) ?? 0) + effect.quantity)
+    }
+    const missing = this.missingCosts([...consumed.entries()].map(([itemId, quantity]) => ({ itemId, quantity })), inventory)
+    if (missing) return this.failure('requirements-not-met', missing)
+
+    const nextState = { ...(location.state ?? {}) }
+    for (const effect of effects) {
+      if (effect.type === 'setLocationState') {
+        nextState[effect.key] = effect.value
+      } else if (effect.type === 'incrementLocationState') {
+        const current = nextState[effect.key]
+        if (current !== undefined && typeof current !== 'number') {
+          return this.failure('invalid-location-state', `地点状态 ${effect.key} 不是数字。`)
+        }
+        nextState[effect.key] = (typeof current === 'number' ? current : 0) + effect.amount
+      }
+    }
+
+    let hpChanged = false
+    for (const effect of effects) {
+      if (effect.type === 'gainItem') await this.adjustInventory(db, character.id, effect.itemId, effect.quantity)
+      else if (effect.type === 'consumeItem') await this.adjustInventory(db, character.id, effect.itemId, -effect.quantity)
+      else if (effect.type === 'adjustHp') {
+        character.hp = Math.max(0, Math.min(character.maxHp, character.hp + effect.amount))
+        hpChanged = true
+      }
+    }
+
+    const now = this.now()
+    const interactionCounts = { ...(location.interactionCounts ?? {}) }
+    interactionCounts[interaction.id] = (interactionCounts[interaction.id] ?? 0) + 1
+    const lastInteractionDates = { ...(location.lastInteractionDates ?? {}) }
+    lastInteractionDates[interaction.id] = this.localDate(now)
+    await db.set('drift_character_location', { id: location.id }, {
+      interactionCounts,
+      lastInteractionDates,
+      state: nextState,
+      updatedAt: now,
+    })
+
+    character.actionPoints -= interaction.apCost
+    character.revision += 1
+    character.updatedAt = now
+    await db.set('drift_character', { id: character.id }, {
+      actionPoints: character.actionPoints,
+      revision: character.revision,
+      updatedAt: now,
+    })
+    if (character.hp <= 0) {
+      await this.markDead(db, user, character, 'event', `在${this.locationName(location.locationId)}互动中因伤势死去`)
+      return this.success('character-died', `“${character.name}”在${this.locationName(location.locationId)}互动中死去。`)
+    }
+    if (hpChanged) {
+      await db.set('drift_character', { id: character.id }, {
+        hp: character.hp,
+        updatedAt: now,
+        revision: character.revision,
+      })
+    }
+    return this.success('location-action-complete', interaction.outcome.message, {
+      character: this.characterSnapshot(character),
+    })
+  }
+
+  private async ensureCharacterMap(db: DriftDatabase, character: DriftCharacter): Promise<DriftCharacterMap | undefined> {
+    const [existing] = await db.get('drift_character_map', {
+      characterId: character.id,
+      regionId: character.regionId,
+    })
+    if (existing) return existing
+    const region = this.content.region(character.regionId)
+    if (!region.map) return undefined
+
+    const now = this.now()
+    const mapSeed = character.mapSeed || this.newMapSeed()
+    if (character.mapSeed !== mapSeed) {
+      character.mapSeed = mapSeed
+      character.updatedAt = now
+      await db.set('drift_character', { id: character.id }, {
+        mapSeed,
+        updatedAt: now,
+      })
+    }
+    const version = this.content.version('region', character.regionId)
+    const random = this.seededRandom(`${mapSeed}:${character.regionId}:${version}`)
+    const lower = Math.max(
+      region.map.locationCount.min,
+      region.map.locationPool.reduce((sum, entry) => sum + entry.min, 0),
+    )
+    const upper = Math.min(
+      region.map.locationCount.max,
+      region.map.locationPool.reduce((sum, entry) => sum + entry.max, 0),
+    )
+    const count = this.randomInteger(random, lower, upper)
+    const selected = region.map.locationPool.map(entry => ({ entry, count: entry.min }))
+    let remaining = count - selected.reduce((sum, item) => sum + item.count, 0)
+    while (remaining > 0) {
+      const available = selected.filter(item => item.count < item.entry.max)
+      const picked = this.pickWeightedWithRandom(available, random)
+      picked.count += 1
+      remaining -= 1
+    }
+    const generated = selected.flatMap(item => Array.from({ length: item.count }, () => item.entry.locationId))
+    for (let index = generated.length - 1; index > 0; index--) {
+      const swap = this.randomInteger(random, 0, index)
+      ;[generated[index], generated[swap]] = [generated[swap], generated[index]]
+    }
+    const map = await db.create('drift_character_map', {
+      characterId: character.id,
+      regionId: character.regionId,
+      generationVersion: version,
+      discoveryWeight: 1,
+      nextDiscoveryOrder: 1,
+      createdAt: now,
+      updatedAt: now,
+    })
+    for (let index = 0; index < generated.length; index++) {
+      await db.create('drift_character_location', {
+        characterId: character.id,
+        regionId: character.regionId,
+        locationId: generated[index],
+        position: this.randomInteger(random, 0, region.map.ringSize - 1),
+        discoveryOrder: index + 1,
+        discoveredAt: null,
+        interactionCounts: {},
+        lastInteractionDates: {},
+        state: {},
+        generationVersion: version,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+    return map
+  }
+
+  private async discoveredLocations(db: DriftDatabase, character: DriftCharacter) {
+    return (await db.get('drift_character_location', {
+      characterId: character.id,
+      regionId: character.regionId,
+    })).filter(location => location.discoveredAt !== null)
+      .sort((a, b) => a.discoveryOrder - b.discoveryOrder)
+  }
+
+  private async discoveredLocationByIndex(db: DriftDatabase, character: DriftCharacter, index: number) {
+    if (!Number.isInteger(index) || index < 1) return undefined
+    return (await this.discoveredLocations(db, character))[index - 1]
+  }
+
+  private safeLocation(id: string) {
+    try {
+      return this.content.location(id)
+    } catch {
+      return undefined
+    }
+  }
+
+  private locationName(id: string) {
+    return this.safeLocation(id)?.name ?? id
+  }
+
+  private discoveryMessage(locationId: string) {
+    const location = this.safeLocation(locationId)
+    return location
+      ? `你发现了地点“${location.name}”。\n${location.description}`
+      : `你发现了地点“${locationId}”，但它的内容暂时不可用。`
+  }
+
+  private findLocationInteraction(interactions: LocationInteraction[], query: string) {
+    const normalized = query.trim().toLowerCase()
+    return interactions.find(interaction => interaction.id.toLowerCase() === normalized)
+      ?? interactions.find(interaction => interaction.label === query.trim())
+  }
+
+  private locationInteractionDisabled(
+    interaction: LocationInteraction,
+    location: DriftCharacterLocation,
+    character: DriftCharacter,
+    inventory: Map<string, number>,
+  ) {
+    if (character.actionPoints < interaction.apCost) return '行动点不足'
+    const lastDate = location.lastInteractionDates?.[interaction.id]
+    if (lastDate && interaction.cooldown) {
+      const availableDate = this.addLocalDays(lastDate, interaction.cooldown.days)
+      const today = this.localDate(this.now())
+      if (availableDate > today) return `今天已经进行过该互动，${availableDate}后可再次进行`
+    }
+    if (!this.conditionsSatisfied(interaction.conditions, character, inventory, { state: location.state ?? {} })) {
+      return interaction.disabledReason ?? this.conditionReason(interaction.conditions)
+    }
+    for (const effect of interaction.outcome.effects) {
+      if (effect.type !== 'incrementLocationState') continue
+      const current = location.state?.[effect.key]
+      if (current !== undefined && typeof current !== 'number') return `地点状态 ${effect.key} 不是数字`
+    }
+    const consumed = new Map<string, number>()
+    for (const effect of interaction.outcome.effects) {
+      if (effect.type === 'consumeItem') consumed.set(effect.itemId, (consumed.get(effect.itemId) ?? 0) + effect.quantity)
+    }
+    return this.missingCosts([...consumed.entries()].map(([itemId, quantity]) => ({ itemId, quantity })), inventory)
+  }
+
+  private async locationInteractionMissingAfterProvision(
+    db: DriftDatabase,
+    character: DriftCharacter,
+    interaction: LocationInteraction,
+    inventory: Map<string, number>,
+  ) {
+    const projected = new Map(inventory)
+    if (character.provisionDate !== this.localDate(this.now())) {
+      const [food] = await this.freshFoodLots(db, character.id)
+      if (food) projected.set(food.itemId, (projected.get(food.itemId) ?? 0) - 1)
+    }
+    const consumed = new Map<string, number>()
+    for (const effect of interaction.outcome.effects) {
+      if (effect.type === 'consumeItem') consumed.set(effect.itemId, (consumed.get(effect.itemId) ?? 0) + effect.quantity)
+    }
+    return this.missingCosts([...consumed.entries()].map(([itemId, quantity]) => ({ itemId, quantity })), projected)
+  }
+
+  private newMapSeed() {
+    return createHash('sha256').update(randomUUID()).digest('hex')
+  }
+
+  private seededRandom(seed: string) {
+    let counter = 0
+    return () => {
+      const digest = createHash('sha256').update(`${seed}:${counter++}`).digest()
+      return digest.readUInt32BE(0) / 0x1_0000_0000
+    }
+  }
+
+  private randomInteger(random: () => number, min: number, max: number) {
+    return min + Math.floor(random() * (max - min + 1))
+  }
+
+  private pickWeightedWithRandom<T extends { entry: { weight: number } }>(entries: T[], random: () => number) {
+    const total = entries.reduce((sum, entry) => sum + entry.entry.weight, 0)
+    let cursor = random() * total
+    for (const entry of entries) {
+      cursor -= entry.entry.weight
+      if (cursor < 0) return entry
+    }
+    return entries[entries.length - 1]
   }
 
   private async openEventChoice(
@@ -1207,10 +1632,10 @@ export class DriftService extends Service {
   }
 
   private conditionsSatisfied(
-    conditions: EventCondition[],
+    conditions: Array<EventCondition | LocationCondition>,
     character: DriftCharacter,
     inventory: Map<string, number>,
-    progress?: DriftCharacterEvent,
+    progress?: Pick<DriftCharacterEvent, 'state'>,
   ) {
     return conditions.every(condition => {
       switch (condition.type) {
@@ -1225,6 +1650,10 @@ export class DriftService extends Service {
         case 'hp':
           return this.compare(character.hp, condition.operator, condition.value)
         case 'eventState': {
+          const value = progress?.state[condition.key]
+          return value !== undefined && this.compareState(value, condition.operator, condition.value)
+        }
+        case 'locationState': {
           const value = progress?.state[condition.key]
           return value !== undefined && this.compareState(value, condition.operator, condition.value)
         }
@@ -1255,7 +1684,7 @@ export class DriftService extends Service {
     }
   }
 
-  private conditionReason(conditions: EventCondition[]) {
+  private conditionReason(conditions: Array<EventCondition | LocationCondition>) {
     return conditions.map(condition => {
       switch (condition.type) {
         case 'localTime': return `需要在 ${condition.start}-${condition.end}`
@@ -1263,6 +1692,7 @@ export class DriftService extends Service {
         case 'capability': return `需要具备 ${condition.capability} 能力的工具`
         case 'hp': return `生命值不满足 ${condition.operator} ${condition.value}`
         case 'eventState': return `事件状态 ${condition.key} 不满足条件`
+        case 'locationState': return `地点状态 ${condition.key} 不满足条件`
       }
     }).join('；')
   }

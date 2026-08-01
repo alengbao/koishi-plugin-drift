@@ -61,11 +61,15 @@ describe('DriftService with SQLite', () => {
     return user.activeCharacterId!
   }
 
-  it('creates all ten tables and seeds content', async () => {
+  async function discoverAllLocations(ctx: Context, characterId: number) {
+    await ctx.database.set('drift_character_location', { characterId }, { discoveredAt: new Date() })
+  }
+
+  it('creates all twelve tables and seeds content', async () => {
     const { ctx } = await createService()
     const tableNames = Object.keys(ctx.model.tables).filter(name => name.startsWith('drift_'))
-    expect(tableNames).toHaveLength(10)
-    expect(await ctx.database.get('drift_content', {})).toHaveLength(18)
+    expect(tableNames).toHaveLength(12)
+    expect(await ctx.database.get('drift_content', {})).toHaveLength(20)
   })
 
   it('creates a default character and makes repeated writes idempotent', async () => {
@@ -109,6 +113,81 @@ describe('DriftService with SQLite', () => {
     expect((await service.getInventory(actor('invalid'))).items).toEqual([
       { itemId: 'ration', name: '口粮', quantity: 3, acquiredOn: '2026-07-30', expiresOn: null },
     ])
+  })
+
+  it('generates stable independent maps with persisted ring positions', async () => {
+    const { ctx, service } = await createService()
+    await service.createCharacter(actor('map-one'), '地图一号', 'map-one-create')
+    await service.createCharacter(actor('map-two'), '地图二号', 'map-two-create')
+    const firstId = await activeCharacterId(ctx, 'map-one')
+    const secondId = await activeCharacterId(ctx, 'map-two')
+    const seed = 'a'.repeat(64)
+    for (const id of [firstId, secondId]) {
+      await ctx.database.remove('drift_character_map', { characterId: id })
+      await ctx.database.remove('drift_character_location', { characterId: id })
+      await ctx.database.set('drift_character', { id }, { mapSeed: seed })
+    }
+    await service.getMap(actor('map-one'))
+    await service.getMap(actor('map-two'))
+    const first = await ctx.database.get('drift_character_location', { characterId: firstId }, { sort: { discoveryOrder: 'asc' } })
+    const second = await ctx.database.get('drift_character_location', { characterId: secondId }, { sort: { discoveryOrder: 'asc' } })
+    expect(first).toHaveLength(2)
+    expect(first.map(row => ({
+      locationId: row.locationId,
+      position: row.position,
+      discoveryOrder: row.discoveryOrder,
+    }))).toEqual(second.map(row => ({
+      locationId: row.locationId,
+      position: row.position,
+      discoveryOrder: row.discoveryOrder,
+    })))
+    expect(first.map(row => row.locationId)).toEqual(expect.arrayContaining(['river', 'cave']))
+    expect(first.every(row => row.position >= 0 && row.position < 7)).toBe(true)
+    expect(await service.getMap(actor('map-one'))).toMatchObject({ locations: [] })
+  })
+
+  it('increments discovery weight after an event and resets it after a location discovery', async () => {
+    const game = await createService()
+    await game.service.createCharacter(actor('map-progress'), '探索者', 'map-progress-create')
+    const characterId = await activeCharacterId(game.ctx, 'map-progress')
+    game.setRandom(0)
+    await game.service.executeAction(actor('map-progress'), 'explore', 'map-progress-event')
+    let [map] = await game.ctx.database.get('drift_character_map', { characterId })
+    expect(map.discoveryWeight).toBe(2)
+    await game.service.resolveChoice(actor('map-progress'), 'leave', 'map-progress-leave')
+
+    game.setRandom(0.999)
+    await game.service.executeAction(actor('map-progress'), 'explore', 'map-progress-location')
+    map = (await game.ctx.database.get('drift_character_map', { characterId }))[0]
+    expect(map).toMatchObject({ discoveryWeight: 1, nextDiscoveryOrder: 2 })
+    const discovered = await game.service.getMap(actor('map-progress'))
+    expect(discovered.locations).toHaveLength(1)
+  })
+
+  it('settles discovered location actions once per Shanghai day and keeps requests idempotent', async () => {
+    const game = await createService(':memory:', 5 * 60 * 1000, 0.999)
+    await game.service.createCharacter(actor('site'), '地点玩家', 'site-create')
+    await game.service.executeAction(actor('site'), 'explore', 'site-discover')
+    const location = await game.service.getLocation(actor('site'), 1)
+    const interaction = location.interactions[0]
+    expect(interaction).toBeTruthy()
+
+    const first = await game.service.executeLocationAction(actor('site'), 1, interaction.id, 'site-action')
+    const repeated = await game.service.executeLocationAction(actor('site'), 1, interaction.id, 'site-action')
+    expect(repeated).toEqual(first)
+    const inventory = await game.service.getInventory(actor('site'))
+    if (location.locationId === 'river') {
+      expect(inventory.items).toContainEqual(expect.objectContaining({ itemId: 'fresh-fish', quantity: 1 }))
+    } else {
+      expect(inventory.items).toContainEqual({ itemId: 'stone', name: '石块', quantity: 1 })
+    }
+    expect(await game.service.executeLocationAction(actor('site'), 1, interaction.id, 'site-cooldown')).toMatchObject({
+      ok: false,
+      code: 'requirements-not-met',
+    })
+
+    game.setNow('2026-07-31T04:00:00.000Z')
+    expect(await game.service.executeLocationAction(actor('site'), 1, interaction.id, 'site-next-day')).toMatchObject({ ok: true })
   })
 
   it('creates dated food batches and merges matching expiry dates', async () => {
@@ -212,6 +291,7 @@ describe('DriftService with SQLite', () => {
 
     game.setRandom(0.999)
     await game.service.createCharacter(actor('fighter'), '战士', 'fighter-create')
+    await discoverAllLocations(game.ctx, await activeCharacterId(game.ctx, 'fighter'))
     await game.service.executeAction(actor('fighter'), 'explore', 'fighter-explore')
     const choices = await game.service.listActions(actor('fighter'))
     expect(choices.map(choice => choice.actionId)).toEqual(['choice:investigate', 'choice:leave'])
@@ -546,7 +626,7 @@ describe('DriftService with SQLite', () => {
     expect((await service.getHistory(actor('effects'))).characters[0].deathCause).toBe('event')
   })
 
-  it('uses the exploration fallback when every event is unavailable', async () => {
+  it('discovers a location when every event is unavailable', async () => {
     const game = await createService()
     await game.service.createCharacter(actor('fallback'), '保底玩家', 'fallback-create')
     const characterId = await activeCharacterId(game.ctx, 'fallback')
@@ -574,17 +654,14 @@ describe('DriftService with SQLite', () => {
       })
     }
     const result = await game.service.executeAction(actor('fallback'), 'explore', 'fallback-explore')
-    expect(result.message).toContain('只找到 1 份木材')
-    expect((await game.service.getInventory(actor('fallback'))).items).toContainEqual({
-      itemId: 'wood',
-      name: '木材',
-      quantity: 1,
-    })
+    expect(result.message).toContain('你发现了地点')
+    expect((await game.service.getMap(actor('fallback'))).locations).toHaveLength(1)
   })
 
   it('records combat death without granting rewards', async () => {
     const { ctx, service } = await createService(':memory:', 5 * 60 * 1000, 0.999)
     await service.createCharacter(actor('doomed'), '伤员', 'doomed-create')
+    await discoverAllLocations(ctx, await activeCharacterId(ctx, 'doomed'))
     await service.executeAction(actor('doomed'), 'explore', 'doomed-explore')
     const [identity] = await ctx.database.get('drift_identity', { platform: 'test', platformUserId: 'doomed' })
     const [user] = await ctx.database.get('drift_user', { id: identity.userId })
@@ -651,7 +728,7 @@ describe('DriftService with SQLite', () => {
     const second = await createService(databasePath)
     const [preserved] = await second.ctx.database.get('drift_content', { type: 'region', contentId: 'forest' })
     expect(preserved.data.name).toBe('自定义森林')
-    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(18)
+    expect(await second.ctx.database.get('drift_content', {})).toHaveLength(20)
   })
 
   it('applies a seed update only when its version increases', async () => {
@@ -736,7 +813,7 @@ describe('DriftService with SQLite', () => {
     }
     await writeFile(overridePath, `${JSON.stringify(override, null, 2)}\n`)
 
-    expect(await game.service.checkContent()).toMatchObject({ ok: true, externalCount: 1, totalCount: 18 })
+    expect(await game.service.checkContent()).toMatchObject({ ok: true, externalCount: 1, totalCount: 20 })
     expect(await game.service.loadContent()).toMatchObject({ ok: true, code: 'content-loaded' })
     expect(await game.service.debugGiveItem(actor('content-dev'), '测试木材', 1, 'content-dev-give')).toMatchObject({ ok: true })
 

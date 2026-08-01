@@ -34,6 +34,7 @@ export interface DriftCharacter {
   speciesId: string
   professionId: string
   regionId: string
+  mapSeed: string | null
   hp: number
   maxHp: number
   attack: number
@@ -46,6 +47,32 @@ export interface DriftCharacter {
   deathCause: DeathCause | null
   deathDetail: string | null
   diedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface DriftCharacterMap {
+  characterId: number
+  regionId: string
+  generationVersion: number
+  discoveryWeight: number
+  nextDiscoveryOrder: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface DriftCharacterLocation {
+  id: number
+  characterId: number
+  regionId: string
+  locationId: string
+  position: number
+  discoveryOrder: number
+  discoveredAt: Date | null
+  interactionCounts: Record<string, number>
+  lastInteractionDates: Record<string, string>
+  state: Record<string, boolean | number | string>
+  generationVersion: number
   createdAt: Date
   updatedAt: Date
 }
@@ -129,6 +156,8 @@ declare module 'koishi' {
     drift_user: DriftUser
     drift_identity: DriftIdentity
     drift_character: DriftCharacter
+    drift_character_map: DriftCharacterMap
+    drift_character_location: DriftCharacterLocation
     drift_inventory: DriftInventory
     drift_inventory_lot: DriftInventoryLot
     drift_character_building: DriftCharacterBuilding
@@ -172,6 +201,7 @@ export function defineModels(ctx: Context) {
     speciesId: 'string(64)',
     professionId: 'string(64)',
     regionId: 'string(64)',
+    mapSeed: { type: 'string', length: 64, nullable: true },
     hp: 'integer',
     maxHp: 'integer',
     attack: 'integer',
@@ -192,6 +222,41 @@ export function defineModels(ctx: Context) {
       ['userId', 'status'],
       ['userId', 'createdAt'],
       ['status', 'regionId'],
+    ],
+  })
+
+  ctx.model.extend('drift_character_map', {
+    characterId: 'unsigned',
+    regionId: 'string(64)',
+    generationVersion: { type: 'unsigned', initial: 1 },
+    discoveryWeight: { type: 'unsigned', initial: 1 },
+    nextDiscoveryOrder: { type: 'unsigned', initial: 1 },
+    createdAt: 'timestamp',
+    updatedAt: 'timestamp',
+  }, {
+    primary: ['characterId', 'regionId'],
+  })
+
+  ctx.model.extend('drift_character_location', {
+    id: 'unsigned',
+    characterId: 'unsigned',
+    regionId: 'string(64)',
+    locationId: 'string(64)',
+    position: 'integer',
+    discoveryOrder: 'unsigned',
+    discoveredAt: { type: 'timestamp', nullable: true },
+    interactionCounts: { type: 'json', initial: {} },
+    lastInteractionDates: { type: 'json', initial: {} },
+    state: { type: 'json', initial: {} },
+    generationVersion: { type: 'unsigned', initial: 1 },
+    createdAt: 'timestamp',
+    updatedAt: 'timestamp',
+  }, {
+    autoInc: true,
+    indexes: [
+      ['characterId', 'regionId', 'position'],
+      ['characterId', 'regionId', 'discoveryOrder'],
+      ['characterId', 'regionId', 'discoveredAt'],
     ],
   })
 

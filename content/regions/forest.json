@@ -2,7 +2,7 @@
   "$schema": "../drift-content.schema.json",
   "type": "region",
   "contentId": "forest",
-  "version": 2,
+  "version": 3,
   "data": {
     "name": "森林",
     "description": "潮湿而寂静的林地。",
@@ -52,6 +52,27 @@
     },
     "buildingIds": [
       "shelter"
-    ]
+    ],
+    "map": {
+      "ringSize": 7,
+      "locationCount": {
+        "min": 2,
+        "max": 4
+      },
+      "locationPool": [
+        {
+          "locationId": "river",
+          "weight": 3,
+          "min": 1,
+          "max": 3
+        },
+        {
+          "locationId": "cave",
+          "weight": 2,
+          "min": 1,
+          "max": 3
+        }
+      ]
+    }
   }
 }

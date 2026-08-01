@@ -7,6 +7,9 @@ import type {
   EventData,
   EventOutcome,
   ItemData,
+  LocationData,
+  LocationCondition,
+  LocationEffect,
   RegionData,
 } from './schema'
 import { contentDefinitionSchema } from './schema'
@@ -17,6 +20,7 @@ export class ContentStore {
   private items = new Map<string, ItemData>()
   private enemies = new Map<string, EnemyData>()
   private buildings = new Map<string, BuildingData>()
+  private locations = new Map<string, LocationData>()
   private events = new Map<string, EventData>()
   private versions = new Map<string, number>()
 
@@ -27,6 +31,7 @@ export class ContentStore {
     this.items = next.items
     this.enemies = next.enemies
     this.buildings = next.buildings
+    this.locations = next.locations
     this.events = next.events
     this.versions = next.versions
   }
@@ -54,6 +59,7 @@ export class ContentStore {
       case 'item': this.items.set(definition.contentId, definition.data); break
       case 'enemy': this.enemies.set(definition.contentId, definition.data); break
       case 'building': this.buildings.set(definition.contentId, definition.data); break
+      case 'location': this.locations.set(definition.contentId, definition.data); break
       case 'event': this.events.set(definition.contentId, definition.data); break
     }
   }
@@ -72,6 +78,14 @@ export class ContentStore {
         }
       }
       for (const buildingId of region.buildingIds) this.require(this.buildings, 'building', buildingId, `region:${id}`)
+      if (region.map) {
+        for (const entry of region.map.locationPool) {
+          this.require(this.locations, 'location', entry.locationId, `region:${id}`)
+          if (!this.locations.get(entry.locationId)!.regionIds.includes(id)) {
+            throw new Error(`内容 region:${id} 引用了不属于该地区的 location:${entry.locationId}`)
+          }
+        }
+      }
     }
     for (const [id, item] of this.items) {
       for (const cost of item.recipe?.ingredients ?? []) this.require(this.items, 'item', cost.itemId, `item:${id}`)
@@ -82,6 +96,13 @@ export class ContentStore {
     for (const [id, building] of this.buildings) {
       for (const regionId of building.allowedRegionIds) this.require(this.regions, 'region', regionId, `building:${id}`)
       for (const cost of building.costs) this.require(this.items, 'item', cost.itemId, `building:${id}`)
+    }
+    for (const [id, location] of this.locations) {
+      for (const regionId of location.regionIds) this.require(this.regions, 'region', regionId, `location:${id}`)
+      for (const interaction of location.interactions) {
+        for (const condition of interaction.conditions) this.validateCondition(condition, `location:${id}:${interaction.id}`)
+        this.validateLocationOutcome(interaction.outcome.effects, `location:${id}:${interaction.id}`)
+      }
     }
     for (const [id, event] of this.events) {
       for (const regionId of event.regionIds) this.require(this.regions, 'region', regionId, `event:${id}`)
@@ -96,7 +117,7 @@ export class ContentStore {
     }
   }
 
-  private validateCondition(condition: EventCondition, owner: string) {
+  private validateCondition(condition: EventCondition | LocationCondition, owner: string) {
     if (condition.type === 'inventory') {
       this.require(this.items, 'item', condition.itemId, owner)
     } else if (condition.type === 'capability') {
@@ -117,10 +138,19 @@ export class ContentStore {
     }
   }
 
+  private validateLocationOutcome(effects: LocationEffect[], owner: string) {
+    for (const effect of effects) {
+      if (effect.type === 'gainItem' || effect.type === 'consumeItem') {
+        this.require(this.items, 'item', effect.itemId, owner)
+      }
+    }
+  }
+
   region(id: string) { return this.required(this.regions, 'region', id) }
   item(id: string) { return this.required(this.items, 'item', id) }
   enemy(id: string) { return this.required(this.enemies, 'enemy', id) }
   building(id: string) { return this.required(this.buildings, 'building', id) }
+  location(id: string) { return this.required(this.locations, 'location', id) }
   event(id: string) { return this.required(this.events, 'event', id) }
   version(type: ContentType, id: string) { return this.required(this.versions, type, `${type}:${id}`) }
 
@@ -146,6 +176,7 @@ export class ContentStore {
       case 'item': return { type, contentId, version, data: this.item(contentId) } as const
       case 'enemy': return { type, contentId, version, data: this.enemy(contentId) } as const
       case 'building': return { type, contentId, version, data: this.building(contentId) } as const
+      case 'location': return { type, contentId, version, data: this.location(contentId) } as const
       case 'event': return { type, contentId, version, data: this.event(contentId) } as const
     }
   }

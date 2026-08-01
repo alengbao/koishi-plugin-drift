@@ -24,7 +24,9 @@ describe('content validation', () => {
     const store = new ContentStore()
     const content = await rows()
     store.load(content)
-    expect(content).toHaveLength(18)
+    expect(content).toHaveLength(20)
+    expect(store.location('river').name).toBe('河流')
+    expect(store.location('cave').name).toBe('岩洞')
     expect(store.region('forest').name).toBe('森林')
     expect(store.item('ration')).toMatchObject({ kind: 'food', nutrition: 1, shelfLifeDays: null })
     expect(store.item('ration').recipe).toBeUndefined()
@@ -45,6 +47,16 @@ describe('content validation', () => {
   it('rejects missing cross-content references', async () => {
     const content = (await rows()).filter(row => row.contentId !== 'wood')
     expect(() => new ContentStore().load(content)).toThrow('item:wood')
+  })
+
+  it('rejects invalid location map and interaction references', async () => {
+    const invalidMap = await rows()
+    invalidMap.find(row => row.contentId === 'forest')!.data.map.locationPool[0].locationId = 'missing-location'
+    expect(() => new ContentStore().load(invalidMap)).toThrow('location:missing-location')
+
+    const invalidReward = await rows()
+    invalidReward.find(row => row.contentId === 'river')!.data.interactions[0].outcome.effects[0].itemId = 'missing-item'
+    expect(() => new ContentStore().load(invalidReward)).toThrow('item:missing-item')
   })
 
   it('rejects invalid defaults and missing tool capabilities', async () => {

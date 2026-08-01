@@ -1,0 +1,37 @@
+{
+  "$schema": "../../drift-content.schema.json",
+  "type": "location",
+  "contentId": "river",
+  "version": 1,
+  "data": {
+    "name": "河流",
+    "description": "林间的河水缓慢流过石滩。",
+    "regionIds": [
+      "forest"
+    ],
+    "interactions": [
+      {
+        "id": "fish",
+        "label": "捕鱼",
+        "description": "在浅水处耐心寻找鱼影。",
+        "apCost": 1,
+        "cooldown": {
+          "type": "localDate",
+          "days": 1
+        },
+        "conditions": [],
+        "outcome": {
+          "type": "effects",
+          "effects": [
+            {
+              "type": "gainItem",
+              "itemId": "fresh-fish",
+              "quantity": 1
+            }
+          ],
+          "message": "你在河流中捕到了一条鲜鱼。"
+        }
+      }
+    ]
+  }
+}
