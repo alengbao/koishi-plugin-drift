@@ -6,6 +6,9 @@ plugin. English commands use the `drift` namespace and Chinese aliases use
 
 ## Development
 
+Read [`AGENTS.md`](AGENTS.md) before contributing. It defines the branch,
+commit, verification, and automated release rules used by this repository.
+
 ```sh
 npm install
 npm run typecheck
